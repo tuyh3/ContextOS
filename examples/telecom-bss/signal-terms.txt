@@ -1,0 +1,18 @@
+# 电信 BSS 客户信号词表样例 —— 演示"客户补充领域词"。
+#
+# 这些是电信 BSS 领域业务名词, 从通用 default.txt 移出(保持 default 跨域中立)。
+# 它们是行业通用词(非某具体客户专有业务数据), 故可作样例入 Git。
+#
+# 格式: 一行一词, 行首 `#` 为注释(抄 .gitignore 约定)。
+# 用法:
+#   1. profile.input.scope.signal_terms_path 指向本文件;
+#   2. 客户**只填一种语言**即可 —— build_signal_terms_cache() 一次性自动补译另一种
+#      (复用 translate.detect_language, 红线 #3 不让客户手工梳理), 运行期读缓存仍 0 token。
+#   下面是中文; 英文(billing/charge/subscribe/unsubscribe/bundle/tariff/sms)由补译自动补齐。
+计费
+账务
+订购
+退订
+套餐
+资费
+短信

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/scripts/contextos-health-sessionstart.sh",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  }
+}

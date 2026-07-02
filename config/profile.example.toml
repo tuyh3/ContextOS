@@ -1,0 +1,133 @@
+# Copy to data/profile.toml or wherever loader 找得到 (见 loader.py 优先级)。
+# DO NOT commit your real profile.toml — 含绝对路径 + TNS。
+# Windows 用户用 config/profile.example.windows.toml(同 schema, 路径值 + TOML 转义纪律按 Windows 写)。
+
+[llm]
+provider = "claude"
+api_key_env = "ANTHROPIC_API_KEY"
+# 真实 client 走 OpenAI 兼容端点(留空则只能用 FakeLLM,见 contextos/llm)
+base_url = "https://api.anthropic.com/v1"   # 换成客户实际网关
+model = "claude-sonnet-4-6"
+# temperature / timeout_seconds / max_retries 用默认
+
+[embedding]
+model = "BAAI/bge-m3"
+device = "cpu"
+
+[reranker]
+enabled = true
+model = "BAAI/bge-reranker-v2-m3"
+top_k_input = 50
+top_k_output = 10
+
+# 07 LLM 重排(build_impact_map 内部投票)运行旋钮。注意: 不同于上面的 [reranker](= 03 BGE 重排)。
+# 全可选, 不写则用下列默认。默认在 DeepSeek 上实测 80 候选 ~29s(逐候选+串行会 ~9.9min 超时)。
+# 调慢但更准: batch_size 调小(=1 逐候选最细) / max_concurrency 调小。怕 LLM 限流: max_concurrency 调到 4。
+[llm_rerank]
+batch_size = 8          # 每次 LLM 判几个候选(>=1; 1=逐候选)
+max_concurrency = 6     # chunk 并发上限, 线程池(>=1; 1=串行)
+method_cap = 30         # 每维 defensive cap: 只 LLM 判 top-N 候选(>=0)
+sql_cap = 30
+config_cap = 20
+
+[query_expansion]
+enabled = true
+translation_provider = "main_llm"
+fallback_provider = "local_qwen_2_5_7b"
+
+[storage]
+data_dir = "database"        # 相对仓根(所有命令的工作目录=仓根); SQLite 库 + 物化语料 + JDT workspace 都建在它下面
+jdtls_workspace_dir = "database/jdtls-workspaces"     # 空 = <data_dir>/jdtls-workspaces, 跟随 data_dir 单一来源, 不另写死
+
+[ingestion]
+default_cleanup = "full"
+chunk_strategy = "h2_h3"
+min_chunk_chars = 30
+
+[input]
+# source_kind -> 是否启用该输入适配器(v1 实装 text + docx + email)
+adapters = { text = true, docx = true, email = true }
+
+# Plan 02b 三道 guard 旋钮(逐客户可调;全可选, 不填则用下列默认值)
+[input.scope]
+prefilter_enabled  = true   # Guard 1a 纯代码预筛(0 token, 拦明显非需求垃圾)
+min_chars          = 12     # 预筛规则1: 短于此判可疑。注意预筛要"短+全符号+无信号词"三条同时成立才拦, 单"短"不拦
+min_alpha_ratio    = 0.3    # 预筛规则2: 真文字(字母+汉字)占比低于此判可疑
+samples            = 1       # Guard 1b scope judge 判几遍。1=单次(放宽判据+few-shot 后多数输入已稳定); >1=自一致采样投票消随机, 但需 LLM temperature>0 才问得出不同答案
+reject_below       = 0.5    # scope_score 低于此 -> REJECT 早退(省下游 04/05/06)
+degraded_below     = 0.8    # 整体 confidence 低于此 -> DEGRADED(产出 + 标人工)
+domain_description = ""      # B 层接缝: 非空则 judge 额外判"是否属于本项目领域"; v1 默认空只跑 A 层
+signal_terms_path  = ""      # 客户需求信号词表路径(平铺文本, 一行一词); 空=只用内置默认双语表
+stop_keywords_path = ""     # 客户停用词表(过宽词黑名单)路径; 空=只用内置通用 default。跑 contextos suggest-stop-keywords 生成草稿, 核对后指向它
+
+[jdtls_runtime]
+# 三路径从哪来/怎么定位: 见 README "JDT LS 运行时从哪来"。装了 VSCode Java 扩展的话
+# 跑 `uv run contextos health` 会自动探测并打印现成路径。版本号/平台后缀以你机器上
+# ~/.vscode/extensions/ 下实际目录名为准; 注意 jre 下还有一层"JDK版本-平台"目录。
+jdtls_path = "~/.vscode/extensions/redhat.java-1.53.0-darwin-arm64/server"
+lombok_path = "~/.vscode/extensions/redhat.java-1.53.0-darwin-arm64/lombok/lombok.jar"
+java_home = "~/.vscode/extensions/redhat.java-1.53.0-darwin-arm64/jre/21.0.10-macosx-aarch64"
+
+[oracle]
+tns_admin = "/path/to/your/tnsnames_dir"
+allowed_instances = ["TEST_DB1", "TEST_DB2", "TEST_DB3"]
+# Plan 05 新增(全可选, 有默认): 查询限制 + 元数据缓存 TTL
+max_rows_hard_limit = 1000
+query_timeout_seconds = 30
+# 连接(握手)超时秒数: 短值让 oracle 不可达时连接快速放弃, 避免 health_check 逐个等满
+# oracledb 默认连接超时(几十秒级 × 白名单实例数)而卡几分钟。健康库握手 <1s, 5s 留足余量。
+connect_timeout_seconds = 5
+reconnect_on_idle = true
+metadata_cache_ttl_hours = 24
+# instance_alias: 测试实例 -> 生产显示名(可选, 默认空; 裁决 5, 仅影响展示不影响匹配)
+# instance_alias = { TEST_DB1 = "PROD_DISPLAY_NAME" }
+
+[[projects]]
+name = "demo"
+path = "/path/to/your/java/project"
+language = "java"
+build_system = "gradle"
+java = { gradle_home = "/path/to/gradle-5.6.4", gradle_version_override = "5.6.4", gradle_arguments = "-Dprofile=prd", gradle_java_home = "/path/to/jdk8", gradle_wrapper_enabled = false }
+
+[corpus]
+materialized_dir = ""        # 空 = <storage.data_dir>/materialized
+formats = ["md", "docx", "png"]
+
+[corpus.ocr]
+backend = "fake"             # fake(测试) / paddle(真实, 需 pip install -e .[ocr])
+languages = ["ch", "en"]
+
+[[corpus.sources]]
+type = "git"
+location = "/path/to/your/activity_document_repo"
+glob = ["Document/**/*.md", "Document/**/*.docx", "Document/**/*.png"]
+leakage_exclude_regex = ["change-log/"]
+
+[[corpus.sources]]
+type = "dir"
+location = "/path/to/your/java/project/document"
+glob = ["**/*.md", "**/*.png"]
+
+# --- Plan 05 数据库血缘 ---
+[code]
+# source_roots 空 -> 扫 project.path; exclude_dirs 默认 target/build/node_modules/.git
+dao_sql_patterns = []                  # 空 -> 全 .sql 当 other_sql(confidence=low)
+# 客户实例示例(见 examples/telecom-bss): path_contains=["/impl/","/src/main/"], conjunction="all"
+# search_source census 模式(profile 驱动, 非敏感=框架类名/前缀; 默认空 -> skill 退中性示例)
+dispatch_patterns = []        # 例: ["FrameworkDispatcher.callByName"]
+carrier_read_patterns = []    # 例: ["StaticDict.getList", "ParamReader.getDetail"]
+
+[tables]
+exclude_schemas = ["SYS", "SYSTEM", "XDB", "MDSYS"]
+# shard_strategy 空 -> 不归并分片表; 客户示例: {type="regex", pattern="0?9\\d{2}$"}
+monthly_pattern = "_\\d{6}$"           # 月表 _YYYYMM 视为独立 entity
+# typo_map = {CSPF2 = "CSFP2"}         # 数据质量错映射(默认空)
+
+[code_index]
+# 04b code_* 投影。jar 缺失时 contextos init 给重建指引(vendor/java-indexer/README.md)
+# 全部 14 键见 docs/需求与设计/v1/Profile与客户初始化.md §3.9(此处只列常用旋钮)
+indexer_jar = "vendor/java-indexer/target/java-indexer-1.0.0.jar"
+indexer_xmx = "4g"
+watcher_enabled = true
+watcher_debounce_seconds = 2.0
+incremental_max_files = 500

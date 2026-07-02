@@ -1,0 +1,10 @@
+{
+  "deferred_charge": {
+    "canonical": "递延收费",
+    "variants": ["延迟扣费", "周期计费", "时点解耦", "deferred_charge"]
+  },
+  "order_no_balance_gate": {
+    "canonical": "订购无余额闸",
+    "variants": ["无余额校验", "订购不校验余额", "余额闸缺失", "order_no_balance_gate"]
+  }
+}

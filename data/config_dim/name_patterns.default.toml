@@ -1,0 +1,4 @@
+# 配置表名启发通用中立 seed(跨域, 无客户特定业务词)。
+# 客户/profile 的 config_tables.detection.name_patterns 与本 seed 合并喂入 path A。
+# 取 LP 跨域通用部分(_CONFIG/_PARAM/_WHITELIST/...), 不含 pricing/dispatch/tariff 等业务词。
+name_patterns = ["_CONFIG", "_PARAM", "_SETTING", "_SWITCH", "_WHITELIST", "_BLACKLIST", "_POLICY", "_DEFINE", "_LIMIT", "_OPTION"]

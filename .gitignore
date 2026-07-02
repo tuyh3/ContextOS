@@ -1,0 +1,109 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.omx/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+.env
+.env.local
+
+# 私有样本数据（CMPAK 内部资料,不入公开仓库）
+# 注意: 用 data/* 而非 data/ — git 对被忽略目录本身的 ! 例外无效;
+#       data/* 忽略目录内容, 允许子路径 ! 例外正常工作。
+# 放行单个文件的配方(避免误放整目录): un-ignore 目录 -> 重新忽略目录内容(dir/*) -> un-ignore 那一个文件。
+data/*
+# Exception: 默认信号词表(我们维护的双语通用改动词, 无客户业务语义, 版本入 Git)。
+#            客户表 customer.txt / 自动补译缓存 cache.txt 由 dir/* 重新兜底, 仍忽略(红线 #2)。
+!/data/requirement_signal_terms/
+/data/requirement_signal_terms/*
+!/data/requirement_signal_terms/default.txt
+# Exception: 通用(客户无关) stop-keywords default(7 类, 无业务语义, 版本化)。
+#            客户专属 stop-keywords 文件(若有)由 dir/* 重新兜底, 仍忽略。
+!/data/stop_keywords/
+/data/stop_keywords/*
+!/data/stop_keywords/default.json
+
+# 需求思考目录里的临时 / 二进制源材料(docx / xlsx / 大图 / xmind 等)
+# 文本 .md 仍然入 git;二进制源材料是单 user 持有
+docs/需求思考/tmp/
+docs/需求思考/**/*.docx
+docs/需求思考/**/*.xlsx
+docs/需求思考/**/*.xmind
+docs/需求思考/**/*.png
+
+# 客户/公司内部文档(BSC 能力池等;含员工名/业务结构,不入 git。
+# BSC 能力池 = 07 评测的逐能力中阶 benchmark,单 user 持有,见 memory)
+docs/亚信文档/
+
+# Office 临时锁文件
+.~*.docx
+.~*.xlsx
+~$*
+
+# 运行时数据（用户跑 ContextOS 时的默认 data_dir,见 docs/需求与设计/README.md §4.5）
+.contextos-fpa/
+contextos-test-data/
+
+# 用户真实 profile.toml(含绝对路径 + TNS,不入 git;config/profile.example.toml 是范本)
+config/profile.toml
+# data/profile.toml 已由上面 data/ 兜底,无需重复
+
+# Vendored OSS clones（v0.2 时拉过 Understand-Anything 作为 POC 对照工具,
+# 它有自己的 .git,不入 ContextOS 仓;真要用从 upstream fresh clone）
+src/vendor/
+
+# 工具产物
+*.log
+build/
+dist/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# Claude Code session metadata
+# 注意: 用 .claude/* 而非 .claude/ — git 对被忽略目录本身的 ! 例外无效
+.claude/*
+!.claude/skills/
+
+# JDT LS workspace data
+*.metadata/
+
+# Plan 实施期 git worktree 隔离工作区(可见,非 .claude/worktrees/ 隐藏路径)
+worktrees/
+
+# Exception: Plan 06 path A 通用中立 name_patterns seed(版本化, 无业务语义)。
+!/data/config_dim/
+/data/config_dim/*
+!/data/config_dim/name_patterns.default.toml
+
+# Plan 06 smoke 运行产物(salt 缓存等), 不入 Git
+.smoke_config_cache/
+
+# Claude Code 项目级 MCP 配置(含本地绝对路径; 本地不入 git, 范本走 examples/cmpak/.mcp.json.example)
+.mcp.json
+
+# OpenCode 项目级配置(含本地绝对路径; 同 .mcp.json, 本地不入 git)
+opencode.json
+opencode.jsonc
+
+# 数据目录(profile.storage.data_dir; SQLite 库 + 物化语料[含客户文档, 红线#2]+ JDT workspace)。
+# 前导斜杠锚定仓根, 只忽略根 database/, 绝不误伤 contextos/ 下任何同名目录。绝不入 git。
+/database/
+
+# Plan 04b: vendored java-indexer 构建产物(jar ~15MB, 本地 mvn package 重建)
+vendor/java-indexer/target/
+vendor/java-indexer/dependency-reduced-pom.xml

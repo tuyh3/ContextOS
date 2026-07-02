@@ -1,0 +1,23 @@
+{
+  "pythonVersion": "3.11",
+  "pythonPath": ".venv/bin/python",
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "."
+  ],
+  "include": [
+    "contextos"
+  ],
+  "exclude": [
+    "**/contextos/code_intel/jdtls_provider/solidlsp/**",
+    "**/.venv/**",
+    "**/build/**",
+    "**/dist/**",
+    "**/__pycache__/**",
+    "**/node_modules/**"
+  ],
+  "ignore": [
+    "**/contextos/code_intel/jdtls_provider/solidlsp/**"
+  ]
+}

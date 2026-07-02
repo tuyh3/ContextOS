@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "contextos"
+version = "0.3.0.dev0"
+description = "ContextOS: 需求影响定位器 (Impact Locator) - POC 阶段"
+authors = [{name = "ContextOS team"}]
+requires-python = ">=3.11,<3.15"
+license = {text = "MIT"}
+dependencies = [
+    # Vendored solidlsp 依赖
+    "pygls>=2.1,<3.0",
+    "lsprotocol>=2025.0",
+    "requests>=2.31",
+    "overrides>=7.7",
+    "pathspec>=0.12",
+    "psutil>=7.0",
+    "joblib>=1.5",
+    "tqdm>=4.67",
+    "sensai-utils>=1.5",
+    "beautifulsoup4>=4.12",  # Required by vendored solidlsp/_serena_util/text_utils.py
+    # 配置 / schema
+    "pydantic>=2.10",
+    "pyyaml>=6.0",
+    # 召回
+    "lancedb>=0.10",
+    "pandas>=2.0",
+    "sentence-transformers>=3.0",
+    # DB
+    "oracledb>=2.5",
+    "python-dotenv>=1.0",
+    # 存储抽象
+    "sqlalchemy>=2.0,<3.0",
+    "alembic>=1.13",
+    # 数据库血缘 (Plan 05): Java AST + Oracle SQL parse
+    "tree-sitter>=0.23,<0.26",
+    "tree-sitter-java>=0.23.5",
+    "sqlglot>=25.0",
+    # 文档解析 (POC-T1)
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    # 测试
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "pytest-asyncio>=0.24",  # in-memory FastMCP Client async tests (asyncio_mode=auto)
+    # 对外集成 (Plan 10)
+    "fastmcp>=2.0,<3.0",
+    "typer>=0.12",
+    "watchdog>=4.0",
+    "filelock>=3.29; sys_platform == 'win32'",
+]
+
+[project.scripts]
+contextos = "contextos.cli.main:app"
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+ocr = [
+    "paddleocr>=2.7",
+    "paddlepaddle>=2.6",
+    "opencv-python-headless>=4.9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["contextos"]
+
+[tool.pytest.ini_options]
+testpaths = ["contextos"]
+addopts = "-v --timeout=600"
+asyncio_mode = "auto"
+markers = [
+    "integration: marks tests as integration tests (require a real Java project + JDT LS, slow)",
+    "cmd_boundary: cross-platform subprocess 命令边界测试(本地 -m cmd_boundary 选此跨平台子集; Windows CI 阶段2 起跑全量 not-integration, 不再靠此 marker 选子集)",
+]
+
+# Pyright config lives in ./pyrightconfig.json — some LSP integrations only read
+# the standalone file, not [tool.pyright] in pyproject.toml.

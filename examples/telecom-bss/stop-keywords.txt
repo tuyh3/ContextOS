@@ -1,0 +1,9 @@
+# 客户停用词表格式示例(演示用, 词全为合成占位)。
+# 一行一词; 行首 # 注释; 每行取第一个空白分隔字段(草稿的 `TOKEN <df>` 可直接用)。
+# 用法: 把你项目里"搜了等于搜全仓"的过宽词填这里, 或用 init/`contextos suggest-stop-keywords`
+#       生成的草稿(gitignored <data_dir>/stop-keywords.draft.txt)人工核对后保存, 再由
+#       profile.input.scope.stop_keywords_path 指向本文件。
+MYSUBSYS_A
+MYSUBSYS_B
+ACMECORE
+WIDGETPLATFORM

@@ -1,0 +1,23 @@
+# Copy this to data/poc/projects.toml and fill in your real paths.
+# DO NOT commit projects.toml — it contains absolute paths + TNS info.
+
+[storage]
+data_dir = "<absolute path to ContextOS data dir, e.g. /path/to/data/poc>"
+jdtls_workspace_dir = "<absolute path, e.g. /path/to/data/poc/jdtls-workspaces>"
+
+[jdtls_runtime]
+jdtls_path = "<path to JDT LS server dir, e.g. ~/.vscode/extensions/redhat.java-*/server>"
+lombok_path = "<path to lombok jar bundled in extension>"
+java_home = "<path to JRE 21, often bundled with redhat.java extension>"
+
+[oracle]
+tns_admin = "<path to dir containing tnsnames.ora>"
+allowed_instances = ["YOUR_TEST_INSTANCE_1", "YOUR_TEST_INSTANCE_2"]
+default_instance = "YOUR_TEST_INSTANCE_1"
+
+[[projects]]
+name = "your-project-name"
+path = "<absolute path to your project>"
+language = "java"
+build_system = "gradle"
+java = { gradle_home = "<gradle path>", gradle_version_override = "5.6.4", gradle_arguments = "-Dprofile=prd", gradle_java_home = "<jdk path>", gradle_wrapper_enabled = false }

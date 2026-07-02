@@ -1,0 +1,63 @@
+# ContextOS 需求信号词默认表(双语, 我们维护, 客户基本零维护)。
+# 用途: Plan 02b Guard 1 预筛 prefilter 的"需求信号词"判据(spec 4.1 + 7)。
+# 约定(抄 .gitignore): 只认行首 `#` 为注释; 空行忽略; C# / order#status 等含 # 的词在自己行内正常收。
+# 运行期纯字符串子串匹配(casefold), 0 token。客户加词走独立 customer.txt + 一次性自动补译。
+#
+# 范围原则(2026-05-31 净化): default 只放**跨域通用**的改动动词 + 通用软件构件名词
+#   (接口/配置/字段/菜单/权限/报表 等任何软件都有的)。**领域专属业务名词**
+#   (电信 BSS 的 计费/套餐/资费 等)移出, 走客户表, 见 examples/telecom-bss/signal-terms.txt。
+# --- 中文: 通用改动动词 + 需求名词 ---
+新增
+增加
+添加
+修改
+变更
+调整
+更新
+删除
+移除
+修复
+优化
+支持
+配置
+开关
+接口
+字段
+流程
+校验
+通知
+菜单
+权限
+批量
+报表
+同步
+对接
+上线
+下线
+灰度
+需求
+功能
+# --- English: change verbs + requirement nouns ---
+add
+change
+modify
+update
+remove
+delete
+fix
+support
+configure
+config
+interface
+field
+validate
+notify
+menu
+permission
+batch
+report
+sync
+requirement
+feature
+enable
+disable

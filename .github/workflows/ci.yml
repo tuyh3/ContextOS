@@ -1,0 +1,52 @@
+name: ci
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ripgrep (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+
+      - name: Install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ripgrep -y
+
+      - name: Verify rg + git present
+        run: |
+          rg --version
+          git --version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync deps
+        run: uv sync --frozen
+
+      # POSIX(ubuntu/macos): 跑全量 not-integration —— 零回归 + 跨平台佐证。
+      - name: Run pytest (POSIX, full not-integration)
+        if: runner.os != 'Windows'
+        run: uv run pytest -m "not integration" -q
+
+      # Windows: Windows 阶段2(flock 平台分派 + 路径归一 5 锚 + POSIX-only skipif)解除了
+      # 三个曾经挡红全量套件的阻塞 —— storage/flock.py 顶层 import fcntl(ModuleNotFoundError)、
+      # test_flock 硬写 fcntl、test_health_hook 依赖 bash; 路径锚点归一 as_posix 后
+      # test_incremental 等 Layer-2 测试也不再依赖 POSIX 分隔符。现在跑跟 POSIX 一样的全量
+      # not-integration(POSIX-only 测试已 skipif, java.exe 真机正确性等阶段3项另案)。
+      - name: Run pytest (Windows, full not-integration)
+        if: runner.os == 'Windows'
+        run: uv run pytest -m "not integration" -q

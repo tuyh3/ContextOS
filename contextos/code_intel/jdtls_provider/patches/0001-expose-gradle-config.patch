@@ -1,0 +1,23 @@
+diff --git a/language_servers/eclipse_jdtls.py b/language_servers/eclipse_jdtls.py
+index xxxxxxx..xxxxxxx 100644
+--- a/language_servers/eclipse_jdtls.py
++++ b/language_servers/eclipse_jdtls.py
+@@ -1303,6 +1303,18 @@ class EclipseJDTLS(SolidLanguageServer):
+         gradle_settings = initialize_params["initializationOptions"]["settings"]["java"]["import"]["gradle"]  # type: ignore
+         # In upstream-jdtls mode we don't ship a Gradle distribution — Buildship will use the project's
+         # ./gradlew wrapper or a system-installed Gradle via its standard discovery rules.
+         if self.runtime_dependency_paths.gradle_path is not None:
+             gradle_settings["home"] = self.runtime_dependency_paths.gradle_path
++        # CONTEXTOS PATCH (2026-05-27): expose gradle home/version/arguments for old-Gradle projects
++        # without ./gradlew (e.g. a large real customer project on Gradle 5.6.4 with -Dprofile=prd system property).
++        custom_gradle_home_override = self._custom_settings.get("gradle_home")
++        custom_gradle_version_override = self._custom_settings.get("gradle_version_override")
++        custom_gradle_args_override = self._custom_settings.get("gradle_arguments")
++        if custom_gradle_home_override is not None:
++            gradle_settings["home"] = custom_gradle_home_override
++        if custom_gradle_version_override is not None:
++            gradle_settings["version"] = custom_gradle_version_override
++        if custom_gradle_args_override is not None:
++            gradle_settings["arguments"] = custom_gradle_args_override
+         gradle_settings["java"] = {"home": gradle_java_home if gradle_java_home is not None else self.runtime_dependency_paths.jre_path}
+         return cast(InitializeParams, initialize_params)

@@ -1,0 +1,136 @@
+# Windows 专用 profile 范本(阶段3 #6)。与 config/profile.example.toml 逐 namespace 对齐, 只有"路径值"按 Windows 写。
+# Copy to data/profile.toml or wherever loader 找得到 (见 loader.py 优先级)。
+# DO NOT commit your real profile.toml — 含绝对路径 + TNS。
+#
+# Windows 路径三条写法纪律(TOML 硬规则, 2026-07-02 真机踩过):
+# 1. 推荐全部用正斜杠: "C:/Program Files/Java/jdk1.8.0_321"(Python pathlib/os 全接受)。
+# 2. 要写反斜杠必须用单引号字面串: 'C:\Program Files\Java\jdk1.8.0_321'。
+# 3. 绝不能"双引号 + 反斜杠": TOML 把双引号串里的 \ 当转义引导, "C:\Users\..." 解析直接报错(\U 后面
+#    不是合法的 8 位 hex); 更阴的是 "C:\temp" 这种不报错但值被静默改坏(\t 变成 TAB 字符)。
+# ~ 开头路径可用: Windows 上按 USERPROFILE 展开(通常 = C:/Users/<你>)。
+# 维护约定: 新增/修改 namespace 时与 profile.example.toml 同步改, 两份范本的 schema 一致性有测试守着
+# (contextos/tests/test_foundation_smoke.py 的 windows 系测试)。
+
+[llm]
+provider = "claude"
+api_key_env = "ANTHROPIC_API_KEY"
+# 真实 client 走 OpenAI 兼容端点(留空则只能用 FakeLLM,见 contextos/llm)
+base_url = "https://api.anthropic.com/v1"   # 换成客户实际网关
+model = "claude-sonnet-4-6"
+# temperature / timeout_seconds / max_retries 用默认
+
+[embedding]
+model = "BAAI/bge-m3"
+device = "cpu"
+
+[reranker]
+enabled = true
+model = "BAAI/bge-reranker-v2-m3"
+top_k_input = 50
+top_k_output = 10
+
+# 07 LLM 重排(build_impact_map 内部投票)运行旋钮。注意: 不同于上面的 [reranker](= 03 BGE 重排)。
+[llm_rerank]
+batch_size = 8          # 每次 LLM 判几个候选(>=1; 1=逐候选)
+max_concurrency = 6     # chunk 并发上限, 线程池(>=1; 1=串行)
+method_cap = 30         # 每维 defensive cap: 只 LLM 判 top-N 候选(>=0)
+sql_cap = 30
+config_cap = 20
+
+[query_expansion]
+enabled = true
+translation_provider = "main_llm"
+fallback_provider = "local_qwen_2_5_7b"
+
+[storage]
+# 相对仓根(所有命令的工作目录=仓根), Windows 上同样成立, 不必改成绝对盘符路径
+data_dir = "database"
+jdtls_workspace_dir = "database/jdtls-workspaces"     # 空 = <data_dir>/jdtls-workspaces
+
+[ingestion]
+default_cleanup = "full"
+chunk_strategy = "h2_h3"
+min_chunk_chars = 30
+
+[input]
+# source_kind -> 是否启用该输入适配器(v1 实装 text + docx + email)
+adapters = { text = true, docx = true, email = true }
+
+[input.scope]
+prefilter_enabled  = true
+min_chars          = 12
+min_alpha_ratio    = 0.3
+samples            = 1
+reject_below       = 0.5
+degraded_below     = 0.8
+domain_description = ""
+signal_terms_path  = ""      # 如指向文件, Windows 上也写正斜杠: "C:/contextos-conf/signal_terms.txt"
+stop_keywords_path = ""
+
+[jdtls_runtime]
+# 复用 VSCode redhat.java 扩展。Windows x64 的扩展目录平台后缀是 win32-x64(ARM 机是 win32-arm64),
+# 版本号以你机器上 %USERPROFILE%/.vscode/extensions/ 下的实际目录名为准。
+# java_home 注意 jre 下还有一层"JDK版本-平台"目录(vendored eclipse_jdtls 同款判法), 要指到那一层;
+# lombok jar 文件名也可能带版本号, 都以实际目录为准。
+# 懒人路线: 装好扩展后跑 `uv run contextos health`, 会自动探测并打印三行现成路径照抄即可;
+# 没装 VSCode 的手动下载指引见 README "JDT LS 运行时从哪来"。
+jdtls_path = "~/.vscode/extensions/redhat.java-1.53.0-win32-x64/server"
+lombok_path = "~/.vscode/extensions/redhat.java-1.53.0-win32-x64/lombok/lombok.jar"
+java_home = "~/.vscode/extensions/redhat.java-1.53.0-win32-x64/jre/21.0.10-win32-x86_64"
+
+[oracle]
+tns_admin = "C:/path/to/your/tnsnames_dir"
+allowed_instances = ["TEST_DB1", "TEST_DB2", "TEST_DB3"]
+max_rows_hard_limit = 1000
+query_timeout_seconds = 30
+connect_timeout_seconds = 5
+reconnect_on_idle = true
+metadata_cache_ttl_hours = 24
+# instance_alias = { TEST_DB1 = "PROD_DISPLAY_NAME" }
+
+[[projects]]
+name = "demo"
+path = "C:/path/to/your/java/project"
+language = "java"
+build_system = "gradle"
+# gradle_java_home 指到 JDK 根目录即可(不用指到 bin/java.exe, 代码自动拼)
+java = { gradle_home = "C:/devTools/gradle-5.6.4", gradle_version_override = "5.6.4", gradle_arguments = "-Dprofile=prd", gradle_java_home = "C:/Program Files/Java/jdk1.8.0_321", gradle_wrapper_enabled = false }
+
+[corpus]
+materialized_dir = ""        # 空 = <storage.data_dir>/materialized
+formats = ["md", "docx", "png"]
+
+[corpus.ocr]
+backend = "fake"             # fake(测试) / paddle(真实, 需 pip install -e .[ocr])
+languages = ["ch", "en"]
+
+[[corpus.sources]]
+type = "git"
+location = "C:/path/to/your/activity_document_repo"
+glob = ["Document/**/*.md", "Document/**/*.docx", "Document/**/*.png"]
+leakage_exclude_regex = ["change-log/"]
+
+[[corpus.sources]]
+type = "dir"
+location = "C:/path/to/your/java/project/document"
+glob = ["**/*.md", "**/*.png"]
+
+# --- Plan 05 数据库血缘 ---
+[code]
+dao_sql_patterns = []                  # 空 -> 全 .sql 当 other_sql(confidence=low)
+dispatch_patterns = []        # 例: ["FrameworkDispatcher.callByName"]
+carrier_read_patterns = []    # 例: ["StaticDict.getList", "ParamReader.getDetail"]
+
+[tables]
+exclude_schemas = ["SYS", "SYSTEM", "XDB", "MDSYS"]
+monthly_pattern = "_\\d{6}$"           # 月表 _YYYYMM 视为独立 entity
+# typo_map = {CSPF2 = "CSFP2"}         # 数据质量错映射(默认空)
+
+[code_index]
+# 04b code_* 投影。jar 缺失时 contextos init 给重建指引(vendor/java-indexer/README.md)
+# jar 相对路径挂仓根, Windows 同口径; jar 是字节码, 可直接从 mac/Linux 机拷过来用
+indexer_jar = "vendor/java-indexer/target/java-indexer-1.0.0.jar"
+indexer_xmx = "4g"
+watcher_enabled = true
+watcher_debounce_seconds = 2.0
+incremental_max_files = 500

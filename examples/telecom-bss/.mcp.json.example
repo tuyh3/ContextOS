@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "contextos": {
+      "command": "uv",
+      "args": ["run", "contextos", "serve-mcp", "--stdio"],
+      "env": {
+        "CONTEXTOS_PROFILE": "/path/to/ContextOS/config/profile.toml",
+        "DEEPSEEK_API_KEY": "<your-deepseek-api-key>"
+      }
+    }
+  }
+}
