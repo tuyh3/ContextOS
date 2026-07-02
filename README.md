@@ -103,7 +103,8 @@ uv sync
 # 2. 配主配置 profile(代码仓路径 / LLM / DB 实例 / 语料目录)
 cp config/profile.example.toml config/profile.toml            # Windows 用 profile.example.windows.toml
 #   然后编辑 config/profile.toml,把路径填成你自己的项目
-#   其中 [jdtls_runtime] 三个路径怎么填,见下面"JDT LS 运行时从哪来"
+#   其中 [jdtls_runtime] 三个路径不用手填 —— 先跑 `uv run contextos health`,
+#   它会自动探测并打印现成路径给你抄(详见下面"JDT LS 运行时从哪来")
 
 # 3. 配凭据 .env:LLM API key(+ 连 DB 才要的 Oracle 账号)
 cp .env.example .env
@@ -161,18 +162,41 @@ java_home   = "..."   # 跑 JDT LS 的 JRE/JDK 根目录(17+)
 
 **路线一(推荐):复用 VSCode 的 Java 扩展。** 如果装过 VSCode 并且装了
 [Extension Pack for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack)
-(或单独的 "Language Support for Java by Red Hat"),这三样你机器上已经全有了,跑:
+(或单独的 "Language Support for Java by Red Hat"),这三样你机器上已经全有了,跑一下
+体检命令,它会自动扫描 `~/.vscode/extensions/` 并把现成路径递给你:
 
 ```bash
 uv run contextos health
 ```
 
-输出里的 `jdtls_runtime` 段会自动扫描 `~/.vscode/extensions/`,探到就直接给出三行现成路径
-(`suggestion` 字段),照抄进 profile 即可。想手动核对的话,三样都在扩展目录下:
-`~/.vscode/extensions/redhat.java-<版本>-<平台>/` 里的 `server/`(= jdtls_path)、
-`lombok/lombok-*.jar`(= lombok_path)、`jre/<JDK版本>-<平台>/`(= java_home,注意 jre
-下还有一层版本目录)。平台后缀:mac 是 `darwin-arm64` / `darwin-x64`,Windows 是
-`win32-x64`,Linux 是 `linux-x64`。
+`health` 输出是一大坨 JSON(各子系统体检表),你要的路径在 `health.jdtls_runtime.suggestion`
+这一段。当 profile 里的三条路径还没填 / 填错时,这段长这样:
+
+```json
+"jdtls_runtime": {
+  "status": "missing",
+  "missing": ["jdtls_path", "lombok_path", "java_home"],
+  "suggestion": {
+    "jdtls_path":  "/Users/you/.vscode/extensions/redhat.java-1.54.0-darwin-arm64/server",
+    "lombok_path": "/Users/you/.vscode/extensions/redhat.java-1.54.0-darwin-arm64/lombok/lombok-1.18.39.jar",
+    "java_home":   "/Users/you/.vscode/extensions/redhat.java-1.54.0-darwin-arm64/jre/21.0.10-macosx-aarch64",
+    "source": "redhat.java-1.54.0-darwin-arm64"
+  }
+}
+```
+
+把 `suggestion` 里的三条路径照抄进 profile 的 `[jdtls_runtime]` 即可。嫌在整坨 JSON 里翻麻烦,
+直接用 jq 把这三条拎出来(`2>/dev/null` 是丢掉无关的告警行,stdout 本身是干净 JSON):
+
+```bash
+uv run contextos health 2>/dev/null | jq '.health.jdtls_runtime.suggestion'
+```
+
+填好后再跑一次 `health`,这段会变成 `"status": "ok"`,就说明三条路径都对了。想手动核对的话,
+三样都在扩展目录下:`~/.vscode/extensions/redhat.java-<版本>-<平台>/` 里的
+`server/`(= jdtls_path)、`lombok/lombok-*.jar`(= lombok_path)、
+`jre/<JDK版本>-<平台>/`(= java_home,注意 jre 下还有一层版本目录)。平台后缀:mac 是
+`darwin-arm64` / `darwin-x64`,Windows 是 `win32-x64`,Linux 是 `linux-x64`。
 
 **路线二:不用 VSCode,手动下载三样。**
 
