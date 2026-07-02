@@ -170,3 +170,29 @@ def test_call_default_args_is_empty_object(profile_env):
     from contextos.cli.main import app
     res = CliRunner().invoke(app, ["call", "profile_info"])
     assert res.exit_code == 0, res.output
+
+
+def test_call_describe_prints_schema_without_executing(profile_env):
+    """`call lookup_table --describe`: 打印参数 schema, 不真跑 lookup(lookup_table 会摸
+    离线 lineage db/Oracle, 若真执行在这个最小 profile 下大概率报错或返回空壳 —— 用
+    "exit 0 且输出含真 schema 字段名" 证明是描述路径, 不是执行路径)。
+    真 schema(2026-07-02 用 inspect_tool.py 对 build_server() 实测锁定):
+    lookup_table.inputSchema == {"properties": {"table": {"type": "string"},
+    "owner": {"default": "", "type": "string"}}, "required": ["table"], "type": "object"}。
+    """
+    from contextos.cli.main import app
+    res = CliRunner().invoke(app, ["call", "lookup_table", "--describe"])
+    assert res.exit_code == 0, res.output
+    assert "table" in res.stdout
+    assert "owner" in res.stdout
+    # 不应该出现 lookup_table 真执行才会有的产物特征(离线态大概率报错/空结果, 但可靠的
+    # 反证是: describe 路径根本不该调用 call_tool, 用 tool 描述文案本身作为存在性证据)
+    assert "lookup_table" in res.stdout
+
+
+def test_call_describe_unknown_tool_exits_2_and_lists_available(profile_env):
+    """--describe 配未知 tool 名: 复用同一条 exit 2 + 可用清单路径(不是新错误形态)。"""
+    from contextos.cli.main import app
+    res = CliRunner().invoke(app, ["call", "bogus_tool_xyz", "--describe"])
+    assert res.exit_code == 2, res.output
+    assert "profile_info" in res.output

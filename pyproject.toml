@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "contextos"
-version = "0.3.0.dev0"
-description = "ContextOS: 需求影响定位器 (Impact Locator) - POC 阶段"
+version = "0.1.0.dev0"
+description = "ContextOS: 存量大型项目的 AI 证据底座 (evidence infrastructure for legacy codebases)"
 authors = [{name = "ContextOS team"}]
 requires-python = ">=3.11,<3.15"
 license = {text = "MIT"}

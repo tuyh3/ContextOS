@@ -63,6 +63,57 @@ def _load_args(args: str | None, args_file: str | None) -> dict[str, Any]:
     return parsed
 
 
+def _format_schema_human(description: str | None, input_schema: dict[str, Any]) -> str:
+    """把 inputSchema(JSON Schema object)转成人读参数列表 + 附原始 JSON(可 jq)。
+
+    每个 property 一行: 名字 / type / required-or-default。required 由顶层 "required"
+    数组决定(与 JSON Schema 语义一致, 不是每个 property 自带的字段)。
+    """
+    lines: list[str] = []
+    if description:
+        lines.append(description)
+        lines.append("")
+    props: dict[str, Any] = input_schema.get("properties", {}) or {}
+    required = set(input_schema.get("required", []) or [])
+    if not props:
+        lines.append("(无参数)")
+    else:
+        lines.append("参数:")
+        for name, spec in props.items():
+            spec = spec if isinstance(spec, dict) else {}
+            ptype = spec.get("type", "any")
+            if name in required:
+                req_desc = "必填"
+            elif "default" in spec:
+                req_desc = f"可选, 默认 {spec['default']!r}"
+            else:
+                req_desc = "可选"
+            lines.append(f"  - {name}: {ptype}, {req_desc}")
+    lines.append("")
+    lines.append("原始 inputSchema(JSON):")
+    lines.append(json.dumps(input_schema, ensure_ascii=False, indent=2))
+    return "\n".join(lines)
+
+
+async def _describe_tool_async(app_ctx: AppContext, tool_name: str) -> str:
+    """查 tool 的描述 + 参数 schema, 不执行(不调 call_tool)。未知 tool 复用同一条
+    exit-2 错误路径(_UserInputError, 与 _call_tool_async 的未知 tool 分支同文案)。"""
+    from fastmcp import Client
+
+    server = build_server(app_ctx)
+    async with Client(server) as client:
+        tools = await client.list_tools()
+        by_name = {t.name: t for t in tools}
+        if tool_name not in by_name:
+            available = ", ".join(sorted(by_name))
+            raise _UserInputError(f"未知 tool: {tool_name!r}. 可用 tool: {available}")
+        tool = by_name[tool_name]
+
+    header = f"Tool: {tool.name}"
+    body = _format_schema_human(tool.description, tool.inputSchema or {})
+    return f"{header}\n\n{body}"
+
+
 async def _call_tool_async(app_ctx: AppContext, tool_name: str, tool_args: dict[str, Any]) -> Any:
     """起 in-memory server + Client, 调一个 tool, 返回其结构化结果。
 
@@ -113,19 +164,36 @@ def call(
         ),
     ] = None,
     profile: Annotated[str | None, typer.Option("--profile", help="profile.toml 路径")] = None,
+    describe: Annotated[
+        bool,
+        typer.Option(
+            "--describe",
+            help="不执行, 只打印该 tool 的描述 + 参数 schema(不知道传什么参数时先看这个)。"
+            "与 --args/--args-file 同传时 --describe 优先, 后两者被忽略。",
+        ),
+    ] = False,
 ) -> None:
     """单独调用任一 MCP tool(不起常驻 server, 不需要 AI editor / MCP Inspector)。
 
     结果 JSON 打到 stdout(ensure_ascii=False, indent=2, 与 query 命令同一形态)。
     """
+    profile_obj = load_profile(Path(profile) if profile else None)
+    app_ctx = AppContext.from_profile(profile_obj)
+
+    if describe:
+        try:
+            text = asyncio.run(_describe_tool_async(app_ctx, tool_name))
+        except _UserInputError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        typer.echo(text)
+        return
+
     try:
         tool_args = _load_args(args, args_file)
     except _UserInputError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-
-    profile_obj = load_profile(Path(profile) if profile else None)
-    app_ctx = AppContext.from_profile(profile_obj)
 
     try:
         result = asyncio.run(_call_tool_async(app_ctx, tool_name, tool_args))

@@ -216,11 +216,13 @@ uv run contextos serve-mcp --stdio
 uv run contextos query "新增预付费转后付费的资格校验"
 ```
 
-**C. 单独试某个 tool** — 不进编辑器,直接从命令行调下表任意一个 MCP tool:
+**C. 单独试某个 tool:`contextos call`** — 不进编辑器,直接从命令行调任意一个 MCP tool:
 
 ```bash
 # 无参数的 tool 直接调
 uv run contextos call profile_info
+
+uv run contextos call lookup_table --describe   # 不知道参数怎么传?先看参数说明
 
 # 带参数:--args 传 JSON
 uv run contextos call lookup_table --args '{"table": "CB_CUSTOMER"}'
@@ -229,7 +231,22 @@ uv run contextos call lookup_table --args '{"table": "CB_CUSTOMER"}'
 uv run contextos call lookup_table --args-file args.json
 ```
 
-工具名打错了会列出全部可用 tool;结果是该 tool 的原始 JSON,方便配 `jq` 或直接看。
+工具名打错了会列出全部可用 tool;`--describe` 打印该 tool 的描述 + 参数 schema 不真执行;结果是该 tool 的原始 JSON,方便配 `jq` 或直接看。
+
+### CLI 命令一览
+
+| 命令 | 做什么 |
+|---|---|
+| `contextos init` | 一键构建四维证据(`--only code\|database\|config\|corpus` 单维 / `--skip-oracle` 跳库) |
+| `contextos health` | 体检各子系统就绪度,并自动探测 JDT LS 运行时路径给出 profile 建议 |
+| `contextos serve-mcp --stdio` | 起 MCP server,接 AI 编辑器(用法 A) |
+| `contextos query "<需求>"` | 一次性跑 `build_impact_map`,Impact Map JSON 打到 stdout(用法 B) |
+| `contextos call <tool>` | 单独调任一 MCP tool,`--args` 传 JSON / `--args-file` 读文件(用法 C) |
+| `contextos rebuild` | 增量重建 code_* 代码投影(撞阈值自动转全量;`--scope` 当前仅 `code`) |
+| `contextos suggest-stop-keywords` | 扫源码统计过宽词,生成停用词草稿(人工核对后经 profile 启用) |
+| `contextos run-evaluation` | 评测 runner 占位(尚未接线) |
+
+命令都认 `CONTEXTOS_PROFILE` 环境变量,也可 `--profile <path>` 显式指定(占位的 `run-evaluation` 无参数)。
 
 ---
 
