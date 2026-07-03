@@ -40,6 +40,7 @@ MCP tool(@mcp.tool()),异常转 ToolError(不裸传 traceback 给不可信 host,
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,8 +69,13 @@ def health_check_impl(app_ctx: Any) -> dict[str, Any]:
 
 
 def _probe_jdtls_runtime(app_ctx: Any) -> dict[str, Any]:
-    """profile [jdtls_runtime] 三路径存在性; 缺失时自动探测本机 VSCode redhat.java 扩展,
-    探到就给三行现成路径建议(2026-07-02 用户指出: 此前填错只有裸报错, 没人告诉路径从哪来)。
+    """profile [jdtls_runtime] 三路径存在性 + 深校验(spec C4: launcher jar / 平台
+    config / lombok 是文件 / java_home 有 bin/java —— 治"浅 exists 假 ok, 照抄后
+    init 才炸"); 缺失时按 spec C1 顺序探测建议: 先 <cwd>/runtime/contextos-runtime
+    官方 bundle(suggestion 四行含 indexer_jar, 全绝对路径, spec C2), 探不到再本机
+    VSCode redhat.java 扩展(三行), 都没有给安装指引。profile 三路径 ok 时仍单独查
+    code_index.indexer_jar(C1 反遮蔽: 用 VSCode 扩展的用户也要收到 bundle 里现成的
+    java-indexer.jar 建议, 否则继续撞"自己 mvn build"的旧摩擦)。
     只探不写(回写 human-gated); 返回 dict 非 str, 因为 suggestion 是结构化内容。"""
     try:
         r = app_ctx.profile.jdtls_runtime
@@ -81,9 +87,31 @@ def _probe_jdtls_runtime(app_ctx: Any) -> dict[str, Any]:
             ) if not Path(raw).expanduser().exists()
         ]
         if not missing:
-            return {"status": "ok"}
-        from contextos.code_intel.jdtls_provider.discovery import discover_vscode_jdtls
-        out: dict[str, Any] = {"status": "missing", "missing": missing}
+            missing = _deep_validate_profile_runtime(r)
+        if not missing:
+            out: dict[str, Any] = {"status": "ok"}
+            _maybe_suggest_indexer_jar(app_ctx, out)
+            return out
+        from contextos.code_intel.jdtls_provider.discovery import (
+            discover_runtime_bundle,
+            discover_vscode_jdtls,
+        )
+        out = {"status": "missing", "missing": missing}
+        bundle = discover_runtime_bundle()
+        if bundle is not None:
+            out["suggestion"] = {
+                "jdtls_path": bundle.jdtls_path,
+                "lombok_path": bundle.lombok_path,
+                "java_home": bundle.java_home,
+                "indexer_jar": bundle.indexer_jar,
+                "source": bundle.source,
+            }
+            out["hint"] = (
+                "探到 runtime bundle(runtime/contextos-runtime), 把 suggestion 前三路径"
+                "填进 profile [jdtls_runtime], indexer_jar 填进 [code_index].indexer_jar"
+                "(全绝对路径, TOML 里 Windows 路径用正斜杠)"
+            )
+            return out
         found = discover_vscode_jdtls()
         if found is not None:
             out["suggestion"] = {
@@ -98,12 +126,56 @@ def _probe_jdtls_runtime(app_ctx: Any) -> dict[str, Any]:
             )
         else:
             out["hint"] = (
-                "本机未探到 VSCode redhat.java 扩展; 安装/下载指引见 README "
-                "'JDT LS 运行时从哪来'"
+                "本机未探到 runtime bundle 或 VSCode redhat.java 扩展; 安装/下载指引见 "
+                "README 'JDT LS 运行时从哪来'"
             )
         return out
     except Exception as exc:
         return {"status": f"error: {exc}"}
+
+
+def _deep_validate_profile_runtime(r: Any) -> list[str]:
+    """三路径都 exists 后的深校验(spec C4 顺带条款: profile 支路同款判据升级)。
+
+    返回缺陷清单(空 = 通过); 条目带"(深校验)"标记与浅 missing 区分, 用户能看懂
+    是"路径在但内容残缺"而非填错路径。三条腿: jdtls 目录要有 launcher jar + 当前
+    平台 config_*(validate_jdtls_layout); lombok 要是文件非目录; java_home 下要有
+    bin/java(win 为 java.exe)—— 全是 JDT LS 真实启动的硬前提。"""
+    from contextos.code_intel.jdtls_provider.discovery import validate_jdtls_layout
+
+    problems: list[str] = []
+    reason = validate_jdtls_layout(Path(r.jdtls_path).expanduser())
+    if reason is not None:
+        problems.append(f"jdtls_path(深校验): {reason}")
+    if not Path(r.lombok_path).expanduser().is_file():
+        problems.append("lombok_path(深校验): 不是常规 jar 文件")
+    java = Path(r.java_home).expanduser() / "bin" / (
+        "java.exe" if sys.platform == "win32" else "java")
+    if not java.is_file():
+        problems.append(f"java_home(深校验): 缺 bin/{java.name} 可执行")
+    return problems
+
+
+def _maybe_suggest_indexer_jar(app_ctx: Any, out: dict[str, Any]) -> None:
+    """spec C1 反遮蔽: profile 三路径 ok 也单独查 code_index.indexer_jar —— 默认值指
+    vendor gitignored 路径, 用 VSCode 扩展的用户没有 bundle suggestion 入口, 这行
+    补充建议是他们唯一能收到现成 indexer 的地方。best-effort: 任何异常吞掉,
+    绝不把 ok 拖成 error(补充建议非判定;jar 解析走 projection/paths chokepoint)。"""
+    try:
+        from contextos.code_intel.jdtls_provider.discovery import discover_runtime_bundle
+        from contextos.code_intel.projection.paths import indexer_jar as _resolve_indexer_jar
+
+        if _resolve_indexer_jar(app_ctx.profile).exists():
+            return
+        bundle = discover_runtime_bundle()
+        if bundle is not None:
+            out["indexer_jar_suggestion"] = bundle.indexer_jar
+            out["hint"] = (
+                "code_index.indexer_jar 指向的 jar 不存在, 但 runtime bundle 里有现成的; "
+                "把 indexer_jar_suggestion 填进 profile [code_index].indexer_jar(绝对路径)"
+            )
+    except Exception:
+        pass
 
 
 def _probe_jdt_ls(app_ctx: Any) -> str:

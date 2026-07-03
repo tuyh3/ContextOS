@@ -1,6 +1,6 @@
-# java-indexer (vendored from legacy-pilot, internal)
+# java-indexer (vendored)
 
-来源: legacy-pilot/java-indexer (内部项目)。JDT Core 3.20.0 批量解析 + binding 解析,
+来源: 上游内部工具, 已 vendored 进本仓(随本仓 MIT 发布)。JDT Core 3.20.0 批量解析 + binding 解析,
 产 7 个 JSONL: files/classes/methods/fields/calls/inheritance/references。
 
 ContextOS 修改: Main/JdtIndexer 加 `--files <list.txt>` 子集解析(增量用;

@@ -68,10 +68,13 @@ from contextos.mcp_server.tools.meta import (
 @pytest.fixture(autouse=True)
 def _no_real_vscode_scan(monkeypatch):
     """hermetic 守卫: 本文件的合成 profile 路径(/jdtls 等)不存在, jdtls_runtime 探针会
-    走 missing 分支真扫开发机 ~/.vscode/extensions —— 结果依赖跑测机器。钉死为"探不到",
+    走 missing 分支真扫开发机 ~/.vscode/extensions 与 <cwd>/runtime/contextos-runtime
+    (spec C1 bundle 支路)—— 结果依赖跑测机器。两条探测都钉死为"探不到",
     探测逻辑本身在 test_discovery.py / test_health_jdtls_probe.py 单独测。"""
     import contextos.code_intel.jdtls_provider.discovery as D
     monkeypatch.setattr(D, "discover_vscode_jdtls", lambda home=None: None)
+    monkeypatch.setattr(D, "discover_runtime_bundle",
+                        lambda repo=None, platform_config=None: None)
 
 
 # host 试图诱导回显的"凭据明文":塞进 os.environ[<api_key_env>] + 自由文本, 验证绝不外泄。

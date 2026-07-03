@@ -1,14 +1,21 @@
-"""自动探测本机 VSCode redhat.java 扩展, 拼出 profile [jdtls_runtime] 三路径建议。
+"""自动探测 JDT LS 运行时来源, 拼出 profile [jdtls_runtime] 路径建议。
 
 动机(2026-07-02 用户指出): jdtls_path/lombok_path/java_home 三个必填路径此前既没文档
 讲从哪来, 填错也只有裸"路径不存在"报错。本模块把我们自己踩过的三个定位坑机器化:
 平台后缀(darwin-arm64/win32-x64/linux-x64)、jre 下还有一层"JDK版本-平台"目录、
 lombok jar 文件名可能带版本号。消费方 = health_check 的 jdtls_runtime 探针(缺路径时
 打印现成建议)。只读探测, 不写任何文件(回写 human-gated: 建议由用户自己贴进 profile)。
+
+两条探测支路(spec C1 顺序在探针层, 本模块只提供各支路):
+- discover_runtime_bundle: <仓根>/runtime/contextos-runtime 官方 Release 解压布局,
+  四件套深校验(C4: launcher jar + 平台 config + lombok + jre/bin/java + java-indexer.jar,
+  任一缺 = 未命中不给假 ok), 建议比 VSCode 支路多一行 indexer_jar。
+- discover_vscode_jdtls: 本机 VSCode redhat.java 扩展扫描(既有)。
 """
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,3 +76,80 @@ def discover_vscode_jdtls(home: Path | None = None) -> DiscoveredJdtls | None:
                 source=ext.name,
             )
     return None
+
+
+# --------------------------------------------------------------------- runtime bundle(spec C1/C4)
+
+
+@dataclass
+class DiscoveredRuntime:
+    """runtime bundle 命中结果: 比 DiscoveredJdtls 多 indexer_jar(bundle 独有,
+    VSCode 扩展没有 java-indexer, spec C2 要求 bundle 建议给出这第四行)。"""
+
+    jdtls_path: str
+    lombok_path: str
+    java_home: str
+    indexer_jar: str
+    source: str          # 恒 "runtime-bundle", 供人核对建议来自哪条支路
+
+
+def _current_platform_config() -> str:
+    """当前平台 -> JDT LS config 目录名。key 词形与 SSOT 字典
+    (eclipse_jdtls.JDTLS_CONFIG_DIR_BY_PLATFORM)对齐: osx-*/linux-*/win-x64。
+    sys.platform=="win32" 对 64 位 Windows 也成立(三平台兼容教训)。"""
+    import platform as _pf
+
+    if sys.platform == "win32":
+        key = "win-x64"
+    elif sys.platform == "darwin":
+        key = "osx-arm64" if _pf.machine() == "arm64" else "osx-x64"
+    else:
+        key = "linux-arm64" if _pf.machine() in ("arm64", "aarch64") else "linux-x64"
+    # 函数内 import: eclipse_jdtls 模块大, 别为一个字典把它拖进 discovery 的常规 import 面。
+    from contextos.code_intel.jdtls_provider.solidlsp.language_servers.eclipse_jdtls import (
+        JDTLS_CONFIG_DIR_BY_PLATFORM,
+    )
+    return JDTLS_CONFIG_DIR_BY_PLATFORM[key]
+
+
+def validate_jdtls_layout(jdtls_dir: Path, platform_config: str | None = None) -> str | None:
+    """深校验 JDT LS 目录(spec C4): launcher jar + 当前平台 config_* 目录。
+
+    返回 None=通过, str=缺什么(人话原因, 探针直接放进 missing 清单)。动机: 浅
+    exists() 假 ok 的两个真实炸点 —— jdtls 目录在但没 plugins/launcher(拷了半截),
+    或 bundle 是别的平台的(config_mac_arm vs config_win), 都要等 init 才炸。
+    platform_config 参数供测试注入(合成树平台无关), 生产走当前平台。"""
+    if not list((jdtls_dir / "plugins").glob("org.eclipse.equinox.launcher_*.jar")):
+        return "jdtls/plugins 缺 org.eclipse.equinox.launcher_*.jar"
+    cfg = platform_config or _current_platform_config()
+    if not (jdtls_dir / cfg).is_dir():
+        return f"jdtls 缺当前平台配置目录 {cfg}"
+    return None
+
+
+def discover_runtime_bundle(
+    repo: Path | None = None, platform_config: str | None = None
+) -> DiscoveredRuntime | None:
+    """<repo|cwd>/runtime/contextos-runtime 四件套深校验(spec C1/C4), 全过才命中。
+
+    锚 = cwd(与 projection/paths.indexer_jar 的相对路径约定同款; repo 参数供注入)。
+    输出全绝对路径 as_posix 形(spec C2/C3: 相对路径会被 validate_profile 拒,
+    且 indexer_jar 挂 cwd 解析会随启动目录漂移; 绝对路径两处都稳)。
+    任一件缺 = None(探针 fall through 下一支路), 不做联网。"""
+    root = ((repo or Path.cwd()) / "runtime" / "contextos-runtime").resolve()
+    jdtls = root / "jdtls"
+    jre = root / "jre"
+    lombok = root / "lombok.jar"
+    indexer = root / "java-indexer.jar"
+    java = jre / "bin" / ("java.exe" if sys.platform == "win32" else "java")
+    if not (jdtls.is_dir() and lombok.is_file() and indexer.is_file() and java.is_file()):
+        return None
+    if validate_jdtls_layout(jdtls, platform_config) is not None:
+        return None
+    return DiscoveredRuntime(
+        jdtls_path=jdtls.as_posix(),
+        lombok_path=lombok.as_posix(),
+        java_home=jre.as_posix(),
+        indexer_jar=indexer.as_posix(),
+        source="runtime-bundle",
+    )

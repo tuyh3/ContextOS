@@ -1,0 +1,38 @@
+{
+  "bundle_layout_version": 1,
+  "jdtls": {
+    "version": "1.60.0",
+    "url": "https://download.eclipse.org/jdtls/milestones/1.60.0/jdt-language-server-1.60.0-202606262232.tar.gz",
+    "sha256": "e94c303d8198f977930803582738771fd18c52c5492878410bf222b1aa81ef1d"
+  },
+  "lombok": {
+    "version": "1.18.46",
+    "url": "https://projectlombok.org/downloads/lombok-1.18.46.jar",
+    "sha256": "01f7b1a015e33e2b62d5f5f37053306357ab1415fd181fcba7794f5d198c1126"
+  },
+  "jre": {
+    "version": "21.0.11+10",
+    "platforms": {
+      "win-x64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.11%2B10/OpenJDK21U-jre_x64_windows_hotspot_21.0.11_10.zip",
+        "sha256": "be26677aaa20b39a62edcaab4c8857a8b76673b0f45abc0b6143b142b62717e4",
+        "archive": "zip"
+      },
+      "mac-arm64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.11%2B10/OpenJDK21U-jre_aarch64_mac_hotspot_21.0.11_10.tar.gz",
+        "sha256": "4b7a8cd23102c251c8b8be42a9a5f1263fb337cf1037f6f64b25f3070efe4b76",
+        "archive": "tar.gz"
+      },
+      "mac-x64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.11%2B10/OpenJDK21U-jre_x64_mac_hotspot_21.0.11_10.tar.gz",
+        "sha256": "b341fb8ed5b70d49066b98176bc98e30f55082192403deb60e0cd5948b6e7923",
+        "archive": "tar.gz"
+      },
+      "linux-x64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.11%2B10/OpenJDK21U-jre_x64_linux_hotspot_21.0.11_10.tar.gz",
+        "sha256": "e5038aae3ca9ff670bc696496b0728dbd23d280026bad30291cb919221ecfdcb",
+        "archive": "tar.gz"
+      }
+    }
+  }
+}

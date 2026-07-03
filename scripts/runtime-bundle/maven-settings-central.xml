@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  中性 Maven settings: 无 mirror, 走 pom 自带 repositories(Maven Central + repo.eclipse.org)。
+  用途: 本机全局 settings.xml 可能配了内网 mirror(外网环境不可达), license 报告生成
+  需要真 Maven Central。check-indexer-licenses.sh 通过 MVN_SETTINGS 环境变量选用本文件:
+    MVN_SETTINGS=scripts/runtime-bundle/maven-settings-central.xml ./scripts/check-indexer-licenses.sh
+  CI(GitHub Actions)默认 settings 即可直连 central, 无需本文件。
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+</settings>

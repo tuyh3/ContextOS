@@ -107,3 +107,9 @@ opencode.jsonc
 # Plan 04b: vendored java-indexer 构建产物(jar ~15MB, 本地 mvn package 重建)
 vendor/java-indexer/target/
 vendor/java-indexer/dependency-reduced-pom.xml
+
+# runtime-bundle 下载缓存(JDT LS/JRE/lombok 上游归档 + 临时 staging, 数百 MB)。绝不入 git。
+/.cache/
+
+# runtime bundle 解压目录(Release 附件下载解压, 不入库)
+/runtime/

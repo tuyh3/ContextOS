@@ -1,0 +1,228 @@
+# runtime-bundle 发布链(spec D1-D6)。job 顺序铁律: build 只产 artifact -> verify-linux
+# 用真 bundle 跑通 init+health 严格断言 -> 全部验过 upload-release 才挂 Release ——
+# 验证失败时 Release 上绝不能已经躺着坏包(--clobber 会拿坏包覆盖好包)。
+name: runtime-bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (vX.Y.Z, 必须已在公开 main 快照链上)"
+        required: true
+
+# 同 tag 并发 dispatch 串行化(防竞态); cancel-in-progress 必须 false ——
+# 绝不中断进行中的 release 上传(半传状态比排队更糟)。
+concurrency:
+  group: runtime-bundle-${{ inputs.tag }}
+  cancel-in-progress: false
+
+# 最小权限: 全 workflow 默认只读, 仅 upload-release job 单独升 contents:write
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}    # YAML 表达式, 非 shell 拼接(spec D5); tag 不存在则 checkout 直接 fail
+          fetch-depth: 0            # ancestry 断言需要全历史 + origin/main
+
+      # tag 合法性 + 快照链断言(fail-closed): tag 必须正则合法且是 origin/main(公开
+      # 脱敏快照链)的祖先 —— 防止从私有历史 / 野分支出包外泄。
+      # inputs 经 env 进 shell(不在 run 里内联 GitHub 表达式, 防 script injection)。
+      - name: Validate tag & ancestry
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$' || { echo "bad tag: $TAG"; exit 1; }
+          git fetch --tags origin main
+          git merge-base --is-ancestor "$TAG^{commit}" origin/main || { echo "tag 不在公开快照链(origin/main)上"; exit 1; }
+
+      # 供 license gate 与 java-indexer 的 mvn package(runner 自带 mvn)。
+      # JDK 21 本地实测可编 vendor pom 的 source/target 1.8(shade fat jar 正常产出)。
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # license gate 前置于打包(fail-closed, spec A5): 任一依赖 license 不可再分发 /
+      # Unknown / 报告格式漂移 -> exit 1 不出包。CI 未设 MVN_SETTINGS -> 走默认 settings
+      # 直连 Maven Central(runner 干净, 无内网坏 mirror; 脚本该分支 = MVN_EXTRA 留空)。
+      - name: License gate (fail-closed)
+        run: ./scripts/check-indexer-licenses.sh
+
+      - name: Build 4 bundles
+        env:
+          TAG: ${{ inputs.tag }}
+        run: ./scripts/build-runtime-bundle.sh --version "$TAG" --out dist/
+
+      # 只产 artifact, 不碰 Release(顺序铁律)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles
+          path: dist/*
+
+      # license 审计归档(spec A5): THIRD-PARTY.txt 报告随 run 留档可查
+      - uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: vendor/java-indexer/target/generated-sources/license/
+
+  verify-linux:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1            # 只要源码跑 uv, 不需要 tags / 全历史
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundles
+          path: dist/
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install rg + unpack linux bundle
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+          mkdir -p runtime
+          # glob 与打包名一致: build 脚本 PKG_BASE="contextos-runtime-<ver>-linux-x64.tar.gz"
+          tar -xzf dist/contextos-runtime-*-linux-x64.tar.gz -C runtime
+          # 早期 smoke: bundle JRE 可执行(比深链路里报错可读得多)
+          ./runtime/contextos-runtime/jre/bin/java -version
+
+      # 合成工程 = Eclipse 工程形(.project/.classpath), JDT LS 原生离线导入。
+      # 本地校准实测(mac, 同 bundle 布局):
+      #   - 无 build 文件的裸目录: JDT 导入 0 符号 -> sanity 探活 0 -> init degraded(exit 1);
+      #     gradle 形则要 Serena 另下 gradle 发行包(非 bundle 职责, CI 里又慢又脆)。
+      #   - 单类 Hello: 软表空(code_fields/code_calls/code_inheritance)也 degraded。
+      #   -> 两个类补齐 字段+调用+继承, 类名匹配 sanity 探活词前缀(Service/Util)。
+      - name: Synthetic project + minimal profile
+        run: |
+          mkdir -p /tmp/proj/src/main/java/com/example
+          cat > /tmp/proj/.project <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <projectDescription>
+            <name>synthetic</name>
+            <buildSpec>
+              <buildCommand>
+                <name>org.eclipse.jdt.core.javabuilder</name>
+              </buildCommand>
+            </buildSpec>
+            <natures>
+              <nature>org.eclipse.jdt.core.javanature</nature>
+            </natures>
+          </projectDescription>
+          XML
+          cat > /tmp/proj/.classpath <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <classpath>
+            <classpathentry kind="src" path="src/main/java"/>
+            <classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+            <classpathentry kind="output" path="bin"/>
+          </classpath>
+          XML
+          cat > /tmp/proj/src/main/java/com/example/Util.java <<'JAVA'
+          package com.example;
+          public class Util {
+              protected String prefix = "hi ";
+              public String greet(String n) { return prefix + n; }
+          }
+          JAVA
+          cat > /tmp/proj/src/main/java/com/example/ServiceImpl.java <<'JAVA'
+          package com.example;
+          public class ServiceImpl extends Util {
+              private Util delegate = new Util();
+              public String run(String n) { return delegate.greet(n); }
+          }
+          JAVA
+          # 最小合法 profile(全量键模板 = contextos/cli/tests/test_suggest_stop_keywords.py
+          # 的 _write_min_profile, 本地实测 pydantic 合法)。不改 example 范本(占位 /path/to
+          # 遍地雷)。heredoc 不 quote: 要展开 $RT/$PWD 成绝对路径。
+          RT="$PWD/runtime/contextos-runtime"
+          cat > config/profile.toml <<TOML
+          [llm]
+          provider = "fake"
+          api_key_env = "K"
+          [embedding]
+          model = "BAAI/bge-m3"
+          [reranker]
+          enabled = true
+          model = "x"
+          top_k_input = 50
+          top_k_output = 10
+          [query_expansion]
+          enabled = true
+          translation_provider = "main_llm"
+          fallback_provider = "x"
+          [storage]
+          data_dir = "$PWD/database"
+          [ingestion]
+          default_cleanup = "full"
+          chunk_strategy = "h2_h3"
+          min_chunk_chars = 30
+          [jdtls_runtime]
+          jdtls_path = "$RT/jdtls"
+          lombok_path = "$RT/lombok.jar"
+          java_home = "$RT/jre"
+          [oracle]
+          tns_admin = "/t"
+          allowed_instances = ["TEST_DB1"]
+          [code]
+          source_roots = ["/tmp/proj"]
+          [code_index]
+          indexer_jar = "$RT/java-indexer.jar"
+          [[projects]]
+          name = "synthetic"
+          path = "/tmp/proj"
+          language = "java"
+          build_system = "gradle"
+          TOML
+
+      # 真链路(spec E5): bundle 的 jdtls+jre+lombok+indexer 全走一遍 init, 再 health 严格断言。
+      # init exit code 即闸门(ready=0 / degraded=1 / aborted=2), 任何降级都挡上传。
+      - name: init + strict asserts (spec E5)
+        run: |
+          uv sync --frozen
+          uv run contextos init --only code --skip-oracle
+          uv run contextos health > /tmp/h.json
+          python3 - <<'PY'
+          import json, sqlite3
+          # 键路径 / 表名 / db 路径均本地校准实测: health 输出 = {"health": {"code_projection":
+          # {"status": ..., "build_id": ...}}}, db = <data_dir>/contextos.db
+          h = json.load(open("/tmp/h.json"))["health"]["code_projection"]
+          assert h["status"] == "ok" and h.get("build_id"), h    # 严格: not_built / degraded 都不放行
+          db = sqlite3.connect("database/contextos.db")
+          for t in ("code_classes", "code_methods"):
+              n = db.execute(f"select count(*) from {t}").fetchone()[0]
+              assert n > 0, f"{t} empty"
+          print("E5 strict asserts OK")
+          PY
+
+  upload-release:
+    needs: verify-linux             # 顺序铁律: 验过才挂 Release(HIGH-1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write               # 只有这个 job 要写权限(最小权限)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundles
+          path: dist/
+
+      # 前提: 用户已对该 tag 建好 Release(发布 runbook); 不存在则 gh 报错 fail-closed。
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}   # 本 job 无 checkout(裸目录), gh 推断不出目标仓, 必须显式
+          TAG: ${{ inputs.tag }}
+        run: |
+          echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$' || { echo "bad tag: $TAG"; exit 1; }
+          gh release upload "$TAG" dist/* --clobber

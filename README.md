@@ -148,19 +148,25 @@ uv run contextos health
 ### JDT LS 运行时从哪来([jdtls_runtime] 三个路径)
 
 profile 里有一段长这样,是代码维度的运行时依赖 —— JDT LS(Eclipse 的 Java 语言服务器)本体、
-lombok 注解处理 jar、以及跑 JDT LS 用的 JRE(17+):
+lombok 注解处理 jar、以及跑 JDT LS 用的 JRE(21+):
 
 ```toml
 [jdtls_runtime]
 jdtls_path  = "..."   # JDT LS 安装目录(里面有 plugins/ 和 config_* 子目录)
 lombok_path = "..."   # lombok jar 文件
-java_home   = "..."   # 跑 JDT LS 的 JRE/JDK 根目录(17+)
+java_home   = "..."   # 跑 JDT LS 的 JRE/JDK 根目录(21+)
 ```
 
 注意:这个 `java_home` 是"跑语言服务器"的新版 Java,跟 `[[projects]]` 里编译你业务项目的
 `gradle_java_home`(老项目常见 JDK 8)是两回事,别填成同一个。
 
-**路线一(推荐):复用 VSCode 的 Java 扩展。** 如果装过 VSCode 并且装了
+**路线零(最省事):下载 runtime bundle。** Release 页下载对应平台的
+`contextos-runtime-<版本>-<平台>` 压缩包,解压到仓根 `runtime/` 目录(解压后会看到
+`runtime/contextos-runtime/`,这是正常的),然后跑
+`uv run contextos health` —— 探到后会给出可直接照抄的四行配置(含 `code_index.indexer_jar`,
+连代码索引器 jar 都不用自己构建)。内网环境把包拷进去解压即可,全程不联网。
+
+**路线一:复用 VSCode 的 Java 扩展。** 如果装过 VSCode 并且装了
 [Extension Pack for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack)
 (或单独的 "Language Support for Java by Red Hat"),这三样你机器上已经全有了,跑一下
 体检命令,它会自动扫描 `~/.vscode/extensions/` 并把现成路径递给你:
@@ -203,7 +209,7 @@ uv run contextos health 2>/dev/null | jq '.health.jdtls_runtime.suggestion'
 - JDT LS:https://download.eclipse.org/jdtls/(milestones 或 snapshots 里挑一个 tar.gz)
   解压后的目录就是 `jdtls_path`;
 - lombok:https://projectlombok.org/download 下载 jar,路径填 `lombok_path`;
-- JRE/JDK 17+:任意发行版(如 https://adoptium.net),根目录填 `java_home`。
+- JRE/JDK 21+:任意发行版(如 https://adoptium.net),根目录填 `java_home`。
 
 内网环境把这三样拷进去即可,ContextOS 不会在运行期自动下载 JDT LS / lombok / JRE
 (整个系统里唯一会联网下模型的是可选的 bge 重排/embedding 权重,默认 fake 后端不触发)。
