@@ -371,3 +371,30 @@ def test_lookup_sequence_fresh_db_degrades_not_crash():
 
 def test_search_sql_fresh_db_returns_empty():
     assert tools.search_sql(_fresh_engine(), pattern="ORDERS") == []
+
+
+def test_lineage_tools_fresh_db_with_real_router_not_crash():
+    """真契约补漏测试(2026-07-04 rc.2 快照自跑抓到): 本文件既有 fresh 测试全用
+    router=None / fake router, 恰好绕开真 DbRouter 里读 table_metadata / owner_routing
+    的两条裸 SQL —— 而 MCP 真实调用路径(contextos call / server)必带真 DbRouter,
+    lookup_table/lookup_lineage/lookup_sequence/lookup_dependency 四工具在真实路径必炸。
+    评分标准: 真 DbRouter(连接桩恒抛=全离线)扫全族, 任何 OperationalError 冒泡即红。"""
+    from contextos.lineage.db_router import DbRouter
+
+    class _P:
+        class oracle:
+            allowed_instances = ["TEST_DB1"]
+
+    def _offline(tns):
+        raise OSError("offline")
+
+    eng = _fresh_engine()
+    router = DbRouter(_P(), eng, connect=_offline)
+    r1 = tools.lookup_table(eng, table="ORDERS", router=router)
+    assert r1["edges_in"] == 0 and "lineage_not_built" in r1["note"]
+    r2 = tools.lookup_lineage(eng, table="ORDERS", router=router)
+    assert r2["upstream"] == [] and "lineage_not_built" in r2["note"]
+    r3 = tools.lookup_sequence(eng, name="ORDER_SEQ", router=router)
+    assert r3["sequence"] is None and "lineage_not_built" in r3["note"]
+    r4 = tools.lookup_dependency(eng, name="V_ORDERS", router=router)
+    assert r4["dependents"] == [] and r4["note"] == "oracle_offline"

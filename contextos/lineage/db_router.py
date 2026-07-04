@@ -52,13 +52,26 @@ class DbRouter:
         self._owner_map: dict[str, str] | None = None
 
     def _routing(self) -> dict[str, str]:
-        """lazy 加载 owner -> TNS 路由映射(从 store.owner_routing 读)。"""
+        """lazy 加载 owner -> TNS 路由映射(从 store.owner_routing 读)。
+
+        fresh 环境守卫(319c105 家族补漏): owner_routing 表未建(只跑过 init --only code)
+        时按"无路由"降级 -> querier_for_owner 走不到既定路由, 与 oracle_offline 契约同向;
+        缺表不裸抛(此前 tools 层守了自己的表, router 这层漏了, MCP 真实调用路径必带 router)。
+        """
         if self._owner_map is None:
+            if not store.existing_tables(self._engine, "owner_routing"):
+                return {}          # 不缓存: init 建表后下一次调用即见真路由, 常驻 server 免重启
             self._owner_map = store.all_owner_routing(self._engine)
         return self._owner_map
 
     def resolve_owner_for_table(self, table: str) -> str | None:
-        """table -> owner(table_metadata 里唯一 owner 才返回; 多 owner/未知 -> None)。"""
+        """table -> owner(table_metadata 里唯一 owner 才返回; 多 owner/未知 -> None)。
+
+        fresh 环境守卫(同上): table_metadata 表未建 -> 视同"无元数据", 返回 None
+        (语义与"查不到唯一 owner"一致), 不裸抛 OperationalError。
+        """
+        if not store.existing_tables(self._engine, "table_metadata"):
+            return None
         tu = (table or "").upper()
         owners = {
             (r["owner"] or "").upper()

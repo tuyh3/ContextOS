@@ -180,3 +180,25 @@ def test_context_manager_protocol_calls_close():
     # 离开 with 块后 close() 已被调用
     assert "TEST_DB1" in exit_calls
     assert r._cache == {}
+
+
+# --------------------------------------------------------------------------- fresh env(319c105 家族补漏)
+
+
+def _fresh_engine():
+    """fresh 库(只跑过 init --only code 的形状): engine 可连但血缘表族整个不存在。"""
+    return make_engine("sqlite://")
+
+
+def test_resolve_owner_for_table_fresh_db_returns_none():
+    """table_metadata 未建 -> 视同"无元数据"返 None, 不裸抛 OperationalError。
+    此前 319c105 只守了 tools 层自己的表, router 这层漏了 —— 而 MCP 真实调用路径
+    (app_ctx.oracle_router)必带真 DbRouter, rc.2 自跑时 4 工具在此炸出。"""
+    r = db_router.DbRouter(_FakeProfile(), _fresh_engine(), connect=lambda tns: f"c:{tns}")
+    assert r.resolve_owner_for_table("ANY_TABLE") is None
+
+
+def test_querier_for_owner_fresh_db_degrades_none():
+    """owner_routing 未建 -> 按"无路由"降级, querier_for_owner 返 None 不裸抛。"""
+    r = db_router.DbRouter(_FakeProfile(), _fresh_engine(), connect=lambda tns: f"c:{tns}")
+    assert r.querier_for_owner("UPC") is None

@@ -513,6 +513,8 @@ _BLIND_PLAN = _REPO / "docs" / "测试" / "ops-localization-真盲测计划.md"
 
 def test_use_guide_mentions_phase1a_pause_and_resume() -> None:
     """使用指南必须向读者交代: 会暂停问你 + 怎么答 + 阶段未确认 banner 含义 + resume。"""
+    if not _GUIDE.exists():
+        pytest.skip(f"docs/ 不入公开快照({_GUIDE}):本地有 docs 才检, 公开 CI 由本地跑兜底")
     text = _GUIDE.read_text(encoding="utf-8")
     for token in ["Phase 1A", "暂停", "resume", "assumed_unconfirmed"]:
         assert token in text, f"使用指南缺 token: {token}"
@@ -520,6 +522,8 @@ def test_use_guide_mentions_phase1a_pause_and_resume() -> None:
 
 def test_blind_plan_has_phase1a_and_pairwise_acceptance_points() -> None:
     """真盲测计划验收点必须补 Phase 1A / 暂停或降级 / resume抗污染 / pairwise abstain。"""
+    if not _BLIND_PLAN.exists():
+        pytest.skip(f"docs/ 不入公开快照({_BLIND_PLAN}):本地有 docs 才检, 公开 CI 由本地跑兜底")
     text = _BLIND_PLAN.read_text(encoding="utf-8")
     for token in ["Phase 1A", "resume", "pairwise", "turn boundary"]:
         assert token in text, f"真盲测计划缺验收点 token: {token}"
@@ -529,6 +533,8 @@ def test_blind_plan_has_neutral_regression_pattern_not_hardcoded_case() -> None:
     """回归案例须写成领域无关 pattern(不硬编具体工单/短码), 真案例指向 gitignored blind-cases.md。
     用短码**形状**的正则判断(`*NNN#` 这类 USSD 短码模式), 不硬编具体号码——否则测试源码本身
     (tracked 文件)就会把真实短码字面值焊进去, 犯 Task 8 那条同样的错误。"""
+    if not _BLIND_PLAN.exists():
+        pytest.skip(f"docs/ 不入公开快照({_BLIND_PLAN}):本地有 docs 才检, 公开 CI 由本地跑兜底")
     text = _BLIND_PLAN.read_text(encoding="utf-8")
     assert "blind-cases.md" in text, "真盲测计划未指向 gitignored 案例集"
     assert not re.search(r"\*\d{2,4}#", text), \
