@@ -70,7 +70,7 @@ RAG 在两个层的身份完全相反,别混用:
 ## 表名验真(别把 DAO 包名当表名 / 别用 offline 的 lookup_table 判表存在)
 
 - **DAO 包名 / 小写串不是表名**:仓里 DAO 目录是小写(如 `xxxdao`),真表名是大写下划线(如 `XXX_TBL`)。表落点一律用 `search_sql` 看恢复 SQL 的 `FROM <真表名>` + 列验真,写大写真名,别把小写包名 / 目录名照搬成"表名"。
-- **offline 下 `lookup_table` 不能判表存在**:`oracle=offline` 时它对**任何**名字都返 `columns=[]` + `note=oracle_offline`,**分不清表存在与否**;不准用"`lookup_table` 命中"当表存在的证据(那只表示工具有返回,不表示表真在)。要确认"表是否存在 / 列是什么"走 `search_sql`(离线可用,看 `FROM` + 列);活库是否真部署仍需 Oracle 在线或人确认(老仓常有引用了表的死 DAO)。
+- **offline 下 `lookup_table` 不能判表存在**:`oracle=offline` 时它对**任何**名字都返 `columns=[]` + `note=oracle_offline`,**分不清表存在与否**;不准用"`lookup_table` 命中"当表存在的证据(那只表示工具有返回,不表示表真在)。要确认"表是否存在 / 列是什么"走 `search_sql`(离线可用,看 `FROM` + 列);活库是否真部署仍需 Oracle 在线或人确认(老仓常有引用了表的死 DAO)。fresh 库(血缘表未建,如只跑过 `init --only code`)时 note 为 `lineage_not_built; oracle_offline` 双态串(在线则单 `lineage_not_built`),此时 edges 计数恒 0 同样不当"无血缘"的证据——先 `contextos init` 建库。
 
 ## health_check 读数(精确口径,真代码核实 meta.py)
 

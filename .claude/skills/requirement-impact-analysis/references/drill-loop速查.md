@@ -44,6 +44,7 @@
 - **读什么**:返回 `{table, owner, columns:[{column_name, data_type}], comment, edges_in, edges_out, note?}`。血缘计数(`edges_in`/`edges_out`)恒返(本地)。
 - **坑**:**不是完整 DDL dump,别期待建表 SQL**。两种 `columns=[]` 区分:
   - `columns=[]` 且 `note=oracle_offline` -> Oracle 不可达(router=None 或白名单库全没连);血缘仍出。
+  - `note` 含 `lineage_not_built` -> 本地血缘表未建(fresh 库,如只跑过 `contextos init --only code`):`edges_in`/`edges_out` 恒 0,**不是**"无血缘"的证据;离线时双态串为 `lineage_not_built; oracle_offline`。先跑 `contextos init` 建血缘再判。
   - `columns=[]` 且**无** note -> 在线路径试过但没取到列:**可能没这表,也可能列查询异常被跳过**(`tools.py` 对每个 querier 的 query 异常是 catch + continue、不置 note)。
   即:note 在 = 库没连(offline / router=None);note 不在 = 在线试过没取到列,**不能单凭此判"确无表"** —— 走 `search_sql` 看 `FROM` + owner/router + 人工确认。
 - **别把 DAO 包名(小写)当表名**(真表名大写下划线);表存在与否 + 列用 `search_sql` 看 `FROM` 验真。**`oracle=offline` 下 `lookup_table` 对任何名都列空,不能当"表存在 / 不存在"的判据**——要判存在走 `search_sql`,活库部署与否需 Oracle 在线 / 人确认。

@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import (
     Boolean, Column, Integer, MetaData, String, Table, Text, delete, func, insert, select,
 )
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql.schema import ColumnDefault
 
@@ -225,6 +226,18 @@ def create_all(engine: Engine) -> None:
     # (如 Block 1a 之前建的 lineage_edges 缺 edge_kind 等列)会在 write 时崩。见 storage/migrate.py。
     from contextos.storage.migrate import ensure_schema
     ensure_schema(engine, metadata)
+
+
+def existing_tables(engine: Engine, *names: str) -> set[str]:
+    """返回 names 中真实存在于库里的表名集合。
+
+    fresh 环境(如只跑过 init --only code)血缘表族可能整个缺失; 读路径查询前用本函数
+    判存在, 缺表按"空血缘"降级, 不裸抛 OperationalError。走 SQLAlchemy inspector
+    (sqlite/信创 PG 通用), 不做 "no such table" 这类方言字符串匹配(同 meta.py
+    code_projection 先例)。不缓存: init 后建表, 常驻 server 下一次调用即可见。
+    """
+    insp = sa_inspect(engine)
+    return {n for n in names if insp.has_table(n)}
 
 
 def _scalar_default(column: Column) -> Any:

@@ -10,6 +10,11 @@ tools.py 是 MCP/CLI 共用的"查已 build 的血缘表 + (有 router 时)Oracl
 2. 在线参数化(FakeQuerier 包在 _SingleRouter 里 + monkeypatch execute_query):
    断言 Oracle SQL 用了 :owner/:tbl/:name bind params(:tbl 避开 Oracle 保留字 TABLE;
    不把字符串拼进 SQL 文本,防注入面)。
+3. fresh 环境降级(血缘表族未建, 如只跑过 `init --only code` 的干净库): 每个函数
+   视同"空血缘"返回结构完整结果 + note 含 lineage_not_built,绝不裸抛
+   OperationalError(2026-07-04 runbook 冷验证复现的 fresh-env 裸 SQL 错误家族)。
+   契约锚: 表已建 + 离线时 note 恒为精确 "oracle_offline"(存量消费方按 == 匹配,
+   见路径 1 各断言),fresh 修复不得动它。
 
 Block 1b Task 13: querier= 参数已改名 router=。既有在线分支测试用 _SingleRouter 包住单
 FakeQuerier 来模拟"只有一库的 router"(fan_out 返 [q]),保持语义等价 + 不破既有覆盖。
@@ -318,3 +323,51 @@ def test_lookup_sequence_capacity_offline_none():
     r = lookup_sequence(eng, name="ORDER_SEQ", router=None)
     assert r["sequence"] is None
     assert r["note"] == "oracle_offline"
+
+
+# --------------------------------------------------------------------------- fresh env(血缘表族未建)
+
+
+def _fresh_engine():
+    """模拟只跑过 init --only code 的干净库: engine 可连但血缘表族整个不存在(不 create_all)。"""
+    return create_engine("sqlite://")
+
+
+def test_lookup_table_fresh_db_degrades_not_crash():
+    r = tools.lookup_table(_fresh_engine(), table="ORDERS", router=None)
+    assert r["edges_in"] == 0 and r["edges_out"] == 0
+    assert r["columns"] == [] and r["comment"] == ""
+    assert "lineage_not_built" in r["note"] and "oracle_offline" in r["note"]
+
+
+def test_lookup_table_fresh_db_online_still_enriches():
+    """fresh 库 + Oracle 在线: 本地血缘归零 + note 只标 lineage_not_built, live 列富化照走。"""
+    q = FakeQuerier()
+    r = tools.lookup_table(_fresh_engine(), table="ORDERS", owner="APP",
+                           router=_SingleRouter(q))
+    assert r["edges_in"] == 0 and r["edges_out"] == 0
+    assert [c["column_name"] for c in r["columns"]] == ["ID", "NAME"]
+    assert r["note"] == "lineage_not_built"
+
+
+def test_lookup_lineage_fresh_db_degrades_not_crash():
+    r = tools.lookup_lineage(_fresh_engine(), table="ORDERS", router=None)
+    assert r["upstream"] == [] and r["downstream"] == []
+    assert "lineage_not_built" in r["note"] and "oracle_offline" in r["note"]
+
+
+def test_lookup_dependency_fresh_db_not_affected():
+    """lookup_dependency 不查本地表, fresh 库上行为同普通离线(防回归锚)。"""
+    r = tools.lookup_dependency(_fresh_engine(), name="V_ORDERS", router=None)
+    assert r["dependents"] == []
+    assert r["note"] == "oracle_offline"
+
+
+def test_lookup_sequence_fresh_db_degrades_not_crash():
+    r = tools.lookup_sequence(_fresh_engine(), name="ORDER_SEQ", router=None)
+    assert r["sequence"] is None and r["code_refs"] == []
+    assert "lineage_not_built" in r["note"] and "oracle_offline" in r["note"]
+
+
+def test_search_sql_fresh_db_returns_empty():
+    assert tools.search_sql(_fresh_engine(), pattern="ORDERS") == []

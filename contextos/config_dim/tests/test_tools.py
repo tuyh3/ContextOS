@@ -12,6 +12,13 @@ config_bindings/rule_sets/rule_bindings/config_snapshots),返回纯 dict"薄层,
 3. 脱敏覆盖(安全红线):所有返回给上层的自由文本字段(excerpt/description/evidence/value_raw)
    过 sensitive.sanitize_text,fixture 塞含敏感值的 description/excerpt(password=secret123),
    断言 tool 输出里该值被 mask,不泄漏明文。
+4. fresh 环境 fail-clean(2026-07-04 用户裁决):config 维表族未建(如只跑过 init --only
+   code 的干净库)时,5 个工具一律抛 ConfigDimNotBuilt——message 可行动(提示跑 contextos
+   init)且不含裸 SQL / 内部表名(经 ToolError 直出不可信 host,红线 #9 卫生)。**不是**
+   空降级:config 唯一数据源就是已 build 索引,返回"空配置"会被 host 误读为"配置项不存在"
+   (对照 lineage 家族的空降级修法——那边有 Oracle live 第二数据源 + oracle_offline 绝不抛
+   契约,config 不适用)。守卫在函数最顶部,空参短路也不例外(统一语义)。
+   与场景 2 的边界:snapshot_missing 是"表在、缺快照行",fail-clean 是"表不存在",两者不互改。
 
 评分标准
 --------
@@ -21,6 +28,8 @@ config_bindings/rule_sets/rule_bindings/config_snapshots),返回纯 dict"薄层,
 - explain_rule_logic: rule_set_id -> clauses(Scope A 可空)/bindings/sample_columns + 空。
 - diff_config: 双环境 key 级 diff + 缺快照降级 note='snapshot_missing'。
 - 脱敏:每个出自由文本的函数,敏感明文不出现在输出任何字符串里。
+- fresh 库:5 工具逐个抛 ConfigDimNotBuilt,message 含 'contextos init'、不含 'no such
+  table'/'SELECT'/任何内部表名;已建库行为零变化(上面 1-3 全量继续绿)。
 
 测试 fixture 用中性合成名(feature.flag.x / application.properties / APP / ORDERS),不掺真
 客户 schema/owner/表名(守 feedback_offline_test_neutral_fixtures)。
@@ -330,3 +339,87 @@ def test_diff_config_redacts_changed_values():
     r = tools.diff_config(e, source_id="s1", env_a="dev", env_b="prod")
     assert "secret123" not in repr(r)
     assert "other999" not in repr(r)
+
+
+# --------------------------------------------------------------------------- fresh env(config 维未建, fail-clean)
+
+
+def _fresh_engine():
+    """模拟只跑过 init --only code 的干净库: engine 可连但 config 维表族整个不存在(不 create_all)。"""
+    return create_engine("sqlite://")
+
+
+def _assert_clean_not_built(excinfo) -> None:
+    """fail-clean 消息断言: 可行动(提示跑 init)+ 不泄内部细节(无裸 SQL / 内部表名, 红线 #9)。"""
+    msg = str(excinfo.value)
+    assert "contextos init" in msg
+    for leak in ("no such table", "SELECT", "config_items", "config_entities",
+                 "config_bindings", "rule_sets", "rule_bindings", "config_snapshots",
+                 "config_sources", "rule_clauses"):
+        assert leak not in msg, f"message 泄漏内部细节: {leak!r} in {msg!r}"
+
+
+def test_lookup_config_fresh_db_raises_clean_not_built():
+    import pytest
+    with pytest.raises(tools.ConfigDimNotBuilt) as ei:
+        tools.lookup_config(_fresh_engine(), config_key="feature.flag.x",
+                            patterns=_PATTERNS, salt=_SALT)
+    _assert_clean_not_built(ei)
+
+
+def test_lookup_config_fresh_db_empty_key_also_raises():
+    """守卫在函数最顶部: 空参短路也不例外(统一语义, 不给'空结构'半吊子答案)。"""
+    import pytest
+    with pytest.raises(tools.ConfigDimNotBuilt):
+        tools.lookup_config(_fresh_engine(), config_key="", patterns=_PATTERNS, salt=_SALT)
+
+
+def test_lookup_rule_fresh_db_raises_clean_not_built():
+    import pytest
+    with pytest.raises(tools.ConfigDimNotBuilt) as ei:
+        tools.lookup_rule(_fresh_engine(), rule_set="PricingRule")
+    _assert_clean_not_built(ei)
+
+
+def test_trace_config_impact_fresh_db_raises_clean_not_built():
+    import pytest
+    with pytest.raises(tools.ConfigDimNotBuilt) as ei:
+        tools.trace_config_impact(_fresh_engine(), entity_key="feature.flag.x")
+    _assert_clean_not_built(ei)
+
+
+def test_explain_rule_logic_fresh_db_raises_clean_not_built():
+    import pytest
+    with pytest.raises(tools.ConfigDimNotBuilt) as ei:
+        tools.explain_rule_logic(_fresh_engine(), rule_set_id="rs1")
+    _assert_clean_not_built(ei)
+
+
+def test_diff_config_fresh_db_raises_clean_not_built():
+    """表不存在 -> fail-clean 抛; 与 snapshot_missing(表在、缺快照行)是两回事, 后者契约不动。"""
+    import pytest
+    with pytest.raises(tools.ConfigDimNotBuilt) as ei:
+        tools.diff_config(_fresh_engine(), source_id="s1", env_a="dev", env_b="prod")
+    _assert_clean_not_built(ei)
+
+
+def test_lookup_config_partial_tables_still_raises():
+    """部分建表态(mutation 探针暴露的缺口): 只建 config_items 缺 config_entities ->
+    仍必须抛(any-missing 语义), 绝不静默返回假空结果。"""
+    import pytest
+    e = _fresh_engine()
+    schema.config_items.create(e)
+    with pytest.raises(tools.ConfigDimNotBuilt) as ei:
+        tools.lookup_config(e, config_key="feature.flag.x",
+                            patterns=_PATTERNS, salt=_SALT)
+    _assert_clean_not_built(ei)
+
+
+def test_diff_config_partial_tables_still_raises():
+    """只建 config_snapshots 缺 config_items -> 抛 fail-clean, 不裸抛也不假 diff。"""
+    import pytest
+    e = _fresh_engine()
+    schema.config_snapshots.create(e)
+    with pytest.raises(tools.ConfigDimNotBuilt) as ei:
+        tools.diff_config(e, source_id="s1", env_a="dev", env_b="prod")
+    _assert_clean_not_built(ei)

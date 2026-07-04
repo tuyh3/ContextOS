@@ -444,3 +444,44 @@ def test_probe_code_projection_commits_behind_parses(tmp_path, make_profile, mon
 
     out = _probe_code_projection(ctx)
     assert out["commits_behind"] == 1
+
+
+# ------------------------------------------- fresh 环境探针(2026-07-03 runbook 真演发现)
+
+
+def test_probe_code_projection_fresh_env_not_built():
+    """fresh 环境(init 前, code_projection_meta 表不存在)语义 = 尚未构建:
+    探针必须返 not_built + hint, 不把裸 sqlite3.OperationalError 直出吓零基础用户
+    (发现出处: runtime-bundle Task 6 runbook 真演, README 路线 init 前跑 health)。"""
+    from sqlalchemy import create_engine
+
+    from contextos.mcp_server.tools.meta import _probe_code_projection
+
+    class _Ctx:
+        pass
+
+    ctx = _Ctx()
+    ctx.engine = create_engine("sqlite://")     # 全新库, 未跑 ensure_projection_schema
+    out = _probe_code_projection(ctx)
+    assert out["status"] == "not_built"
+    assert "contextos init" in out["hint"]
+
+
+def test_probe_code_projection_db_corruption_not_swallowed(tmp_path):
+    """守卫: 真数据库损坏绝不吞成 not_built(会误导用户以为 init 一下就好)。
+    非 sqlite 内容的文件 -> status 仍是可见的 'error: ...' 直出可诊断。"""
+    from sqlalchemy import create_engine
+
+    from contextos.mcp_server.tools.meta import _probe_code_projection
+
+    bad = tmp_path / "corrupt.db"
+    bad.write_bytes(b"this is not a sqlite database file " * 8)
+
+    class _Ctx:
+        pass
+
+    ctx = _Ctx()
+    ctx.engine = create_engine(f"sqlite:///{bad}")
+    out = _probe_code_projection(ctx)
+    assert out["status"].startswith("error:")
+    assert "not_built" not in out["status"]

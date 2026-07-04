@@ -13,6 +13,12 @@ config_bindings / rule_sets / rule_bindings / config_snapshots),全返回纯 dic
 - diff_config 缺一侧 config_snapshots 真数据 -> 优雅降级返 {note:'snapshot_missing', ...},
   绝不抛(多环境真快照 v1 常缺,见 design 决策11 / spec caveat)。
 - 查询全走 SQLAlchemy select 查配置表,**不**新发 Oracle(配置值已物化在 config_items 里)。
+- fresh 环境 fail-clean(2026-07-04 用户裁决): config 维表族未建(如只跑过 init --only
+  code 的干净库)时 5 个工具一律抛 ConfigDimNotBuilt——message 可行动(提示跑 contextos
+  init)且不含裸 SQL / 内部表名(经 mcp ToolError 直出不可信 host,红线 #9 卫生)。
+  **不是**空降级: config 唯一数据源就是已 build 索引,返回"空配置"会被 host 误读为
+  "配置项不存在"(对照 lineage 家族空降级——那边有 Oracle live 第二数据源,此处不适用)。
+  与 snapshot_missing 的边界: 那是"表在、缺快照行",本条是"表不存在",互不覆盖。
 
 复用: schema(config_dim/schema.py 12 表)、sensitive.sanitize_text(config_dim/sensitive.py)。
 """
@@ -21,12 +27,38 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Engine
+from sqlalchemy.sql.schema import Table
 
 from contextos.config_dim import schema
 from contextos.config_dim.sensitive import redact_secrets_in_text, sanitize_text
 
 _SNAPSHOT_MISSING = "snapshot_missing"
+
+
+class ConfigDimNotBuilt(RuntimeError):
+    """config 维表族未建(fresh 环境, 如只跑过 init --only code 的干净库)。
+
+    fail-clean(2026-07-04 用户裁决): 缺表时抛本异常而非返回"空配置"假装有答案;
+    message 干净可行动、不含 SQL / 内部表名(evidence.py 的 ToolError(f"... {exc}")
+    会把 str(exc) 直出不可信 host, 红线 #9 卫生)。
+    """
+
+
+_NOT_BUILT_MSG = "config dimension not built; run `contextos init` first"
+
+
+def _require_built(engine: Engine, *tables: Table) -> None:
+    """查询前判本函数触及的表都存在, 缺任一 -> ConfigDimNotBuilt。
+
+    走 SQLAlchemy inspector(sqlite/信创 PG 通用, 不做 "no such table" 方言字符串匹配,
+    红线 #6; 先例 meta.py code_projection not_built)。守卫放函数最顶部: 空参短路也不
+    例外, 统一"维未建一律 fail-clean"语义。不缓存: init 后建表, 常驻 server 下次调用即见。
+    """
+    insp = sa_inspect(engine)
+    if any(not insp.has_table(t.name) for t in tables):
+        raise ConfigDimNotBuilt(_NOT_BUILT_MSG)
 
 # 安全floor(纵深防御): 即便调用方忘传 patterns(或传空), 这些通用敏感 key 仍强制 redact。
 # 镜像 profile.config.sensitive_key_patterns 默认值(profile/schema.py ConfigConfig);
@@ -69,6 +101,7 @@ def lookup_config(engine: Engine, *, config_key: str, patterns: list[str],
     """
     items_tbl = schema.config_items
     ents_tbl = schema.config_entities
+    _require_built(engine, items_tbl, ents_tbl)
 
     result: dict[str, Any] = {"config_key": config_key, "items": [],
                               "entity": None, "sources": []}
@@ -138,6 +171,7 @@ def lookup_rule(engine: Engine, *, rule_set: str,
     pats = patterns or []
     rs_tbl = schema.rule_sets
     rb_tbl = schema.rule_bindings
+    _require_built(engine, rs_tbl, rb_tbl)
 
     result: dict[str, Any] = {"rule_set": rule_set, "rule_set_id": "",
                               "category": "", "owner_domain": "", "status": "",
@@ -189,6 +223,7 @@ def trace_config_impact(engine: Engine, *, entity_key: str,
     pats = patterns or []
     ents_tbl = schema.config_entities
     cb_tbl = schema.config_bindings
+    _require_built(engine, ents_tbl, cb_tbl)
 
     result: dict[str, Any] = {"entity_key": entity_key, "direct_bindings": []}
     if not entity_key:
@@ -233,6 +268,7 @@ def explain_rule_logic(engine: Engine, *, rule_set_id: str,
     rc_tbl = schema.rule_clauses
     rb_tbl = schema.rule_bindings
     src_tbl = schema.config_sources
+    _require_built(engine, rs_tbl, rc_tbl, rb_tbl, src_tbl)
 
     result: dict[str, Any] = {"rule_set_id": rule_set_id, "clauses": [],
                               "bindings": [], "sample_columns": []}
@@ -319,6 +355,8 @@ def diff_config(engine: Engine, *, source_id: str, env_a: str, env_b: str,
     pats = patterns or []
     snap_tbl = schema.config_snapshots
     items_tbl = schema.config_items
+    # 表不存在 -> fail-clean 抛; snapshot_missing 只管"表在、缺快照行"(契约不动)。
+    _require_built(engine, snap_tbl, items_tbl)
 
     with engine.connect() as conn:
         snap_a = conn.execute(

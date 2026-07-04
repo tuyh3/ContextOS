@@ -21,8 +21,10 @@ MCP tool(@mcp.tool()),异常转 ToolError(不裸传 traceback 给不可信 host,
      router=None 或 fan_out=[] 均视作离线, 这里再包一层防御)。
    - engine 轻量 SELECT 1 探活(SQLAlchemy engine 构造廉价、首次 connect 才真连);成功 "ok",
      异常 "error: <msg>"。
-   - code_projection(Plan 04b T14)读 code_projection_meta:未 build -> not_built + hint;
-     已 build -> {status, build_id, indexed_commit[, commits_behind]}(spec §9 freshness)。
+   - code_projection(Plan 04b T14)读 code_projection_meta:未 build -> not_built + hint
+     (含 fresh 环境表都不存在的情形, 经 inspector has_table 判定, 不裸出 OperationalError;
+     真库损坏仍直出 error 不吞);已 build -> {status, build_id, indexed_commit
+     [, commits_behind]}(spec §9 freshness)。
 
 2. profile_info(app_ctx) -> {profile_path, data_dir, repo_root, source_roots,
    oracle_instances, rag_corpora, missing_required}
@@ -237,8 +239,17 @@ def _probe_ripgrep(app_ctx: Any) -> str:
 def _probe_code_projection(app_ctx: Any) -> dict[str, Any]:
     """投影状态(spec §9 freshness 透传 run 级主表面)。"""
     try:
+        from sqlalchemy import inspect as sa_inspect
+
+        from contextos.code_intel.projection import schema as proj_schema
         from contextos.code_intel.projection import store as proj_store
         engine = app_ctx.engine
+        # fresh 环境(init 前)meta 表不存在, 语义 = 尚未构建, 不把裸 OperationalError
+        # 直出吓用户;只认"表不存在"这一种缺席 —— 真损坏(inspect 自己会抛)仍走外层
+        # except 直出 error, 绝不吞成 not_built。has_table 走 SQLAlchemy inspector,
+        # sqlite/信创 PG 通用, 不做 "no such table" 这类方言字符串匹配。
+        if not sa_inspect(engine).has_table(proj_schema.code_projection_meta.name):
+            return {"status": "not_built", "hint": "run `contextos init`"}
         build_id = proj_store.get_meta(engine, "projection_build_id")
         if not build_id:
             return {"status": "not_built", "hint": "run `contextos init`"}

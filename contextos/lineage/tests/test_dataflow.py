@@ -99,3 +99,10 @@ def test_dedup_across_paths():
     # 同表不重复(B 已命中 PM_OFFER_CHA, C 即便也抽到也只留一条)
     targets = [h["table"] for h in hits]
     assert len(targets) == len(set(targets))
+
+
+def test_trace_fresh_db_degrades_to_empty():
+    """fresh 库(血缘表族未建, 如只跑过 init --only code): 视同空血缘返 [], 不裸抛。"""
+    from contextos.lineage.dataflow import trace_method_dataflow
+    e = make_engine("sqlite://")
+    assert trace_method_dataflow(e, source_path="order/impl/PmOfferDao.java") == []

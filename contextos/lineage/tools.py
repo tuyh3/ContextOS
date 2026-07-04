@@ -30,6 +30,10 @@ fan-out 韧性
 - router=None(离线)时查 Oracle 的函数走降级分支,返回结构完整 dict(本地血缘部分 +
   note='oracle_offline'),绝不抛。
 - search_sql 纯本地(查 sql_templates),字面匹配 pattern,无 Oracle。
+- fresh 环境(血缘表族未建,如只跑过 init --only code 的干净库): 查本地表前先
+  store.existing_tables 判存在,缺表视同"空血缘"(计数 0 / 列表空)+ note 含
+  'lineage_not_built',绝不裸抛 OperationalError(2026-07-04 runbook 冷验证复现)。
+  已建 + 离线时 note 恒为精确 'oracle_offline' 不变(存量消费方按 == 匹配)。
 
 复用: execute_query(oracle_metadata.py,只读闸门 + ROWNUM 包装 + bind params)、
 store.lineage_edges / store.sql_templates schema。
@@ -49,6 +53,7 @@ from contextos.lineage import store
 from contextos.lineage.oracle_metadata import execute_query
 
 _OFFLINE_NOTE = "oracle_offline"
+_NOT_BUILT_NOTE = "lineage_not_built"
 _SNIPPET_MAX = 200
 
 # 合法 SQL identifier(table/owner/sequence/view 名): 字母/下划线开头 + 字母数字 _ $ # . ,
@@ -78,6 +83,18 @@ def _route(router: Any, *, owner: str = "", table: str = "") -> list[Any]:
     return router.fan_out()
 
 
+def _set_note(result: dict[str, Any], *parts: str) -> None:
+    """把非空 note 片段拼进 result['note'](分号连接); 全空则不落 note 键。
+
+    单一 note(如已建 + 离线)保持裸值 'oracle_offline' 不变——存量消费方按 == 匹配;
+    双态(fresh + 离线)拼 'lineage_not_built; oracle_offline'(该态修复前直接崩,
+    无存量消费方,子串匹配友好)。
+    """
+    notes = [p for p in parts if p]
+    if notes:
+        result["note"] = "; ".join(notes)
+
+
 def _validate_ident(value: str, *, field: str) -> str:
     """table/owner/name 校验: 非空 + 合法 identifier(无分号/引号/SQL 片段)。
 
@@ -104,6 +121,9 @@ def search_sql(engine: Engine, *, pattern: str, limit: int = 20) -> list[dict[st
     if cap == 0:
         return []
     tpl = store.sql_templates
+    if not store.existing_tables(engine, tpl.name):
+        return []  # fresh 环境表未建: 视同无模板, 不裸抛
+
     stmt = (
         select(tpl.c.template_id, tpl.c.source_file, tpl.c.container,
                tpl.c.sql_text, tpl.c.recovery_mode, tpl.c.confidence)
@@ -144,13 +164,16 @@ def lookup_table(engine: Engine, *, table: str, owner: str = "",
         _validate_ident(owner, field="owner")
 
     edges = store.lineage_edges
-    with engine.connect() as conn:
-        edges_out = len(conn.execute(
-            select(edges.c.edge_id).where(edges.c.src_table == table)
-        ).all())
-        edges_in = len(conn.execute(
-            select(edges.c.edge_id).where(edges.c.dst_table == table)
-        ).all())
+    lineage_built = bool(store.existing_tables(engine, edges.name))
+    edges_in = edges_out = 0
+    if lineage_built:
+        with engine.connect() as conn:
+            edges_out = len(conn.execute(
+                select(edges.c.edge_id).where(edges.c.src_table == table)
+            ).all())
+            edges_in = len(conn.execute(
+                select(edges.c.edge_id).where(edges.c.dst_table == table)
+            ).all())
 
     # eff_owner: caller 给的优先; 没给则从 routing 解析(同一个 owner 既定路由也填 SQL bind)。
     eff_owner = owner
@@ -166,10 +189,12 @@ def lookup_table(engine: Engine, *, table: str, owner: str = "",
         "edges_out": edges_out,
     }
 
+    built_note = "" if lineage_built else _NOT_BUILT_NOTE
     queriers = _route(router, owner=eff_owner, table=table)
     if not queriers:
-        result["note"] = _OFFLINE_NOTE
+        _set_note(result, built_note, _OFFLINE_NOTE)
         return result
+    _set_note(result, built_note)
 
     # bind 名避开 Oracle 保留字: TABLE 是保留字, :table 在真库报 ORA-01745(用 :tbl)。
     params = {"owner": eff_owner, "tbl": table}
@@ -227,37 +252,41 @@ def lookup_lineage(engine: Engine, *, table: str, direction: str = "both",
     seen_up: set[str] = set()
     seen_down: set[str] = set()
 
-    with engine.connect() as conn:
-        if want_down:
-            for r in conn.execute(
-                select(edges.c.dst_table, edges.c.relation_type)
-                .where(edges.c.src_table == table)
-            ):
-                tbl = r._mapping["dst_table"]
-                if tbl and tbl not in seen_down:
-                    seen_down.add(tbl)
-                    downstream.append({"table": tbl,
-                                       "relation_type": r._mapping["relation_type"],
-                                       "source": "lineage_edges"})
-        if want_up:
-            for r in conn.execute(
-                select(edges.c.src_table, edges.c.relation_type)
-                .where(edges.c.dst_table == table)
-            ):
-                tbl = r._mapping["src_table"]
-                if tbl and tbl not in seen_up:
-                    seen_up.add(tbl)
-                    upstream.append({"table": tbl,
-                                     "relation_type": r._mapping["relation_type"],
-                                     "source": "lineage_edges"})
+    lineage_built = bool(store.existing_tables(engine, edges.name))
+    if lineage_built:
+        with engine.connect() as conn:
+            if want_down:
+                for r in conn.execute(
+                    select(edges.c.dst_table, edges.c.relation_type)
+                    .where(edges.c.src_table == table)
+                ):
+                    tbl = r._mapping["dst_table"]
+                    if tbl and tbl not in seen_down:
+                        seen_down.add(tbl)
+                        downstream.append({"table": tbl,
+                                           "relation_type": r._mapping["relation_type"],
+                                           "source": "lineage_edges"})
+            if want_up:
+                for r in conn.execute(
+                    select(edges.c.src_table, edges.c.relation_type)
+                    .where(edges.c.dst_table == table)
+                ):
+                    tbl = r._mapping["src_table"]
+                    if tbl and tbl not in seen_up:
+                        seen_up.add(tbl)
+                        upstream.append({"table": tbl,
+                                         "relation_type": r._mapping["relation_type"],
+                                         "source": "lineage_edges"})
 
     result: dict[str, Any] = {"table": table, "upstream": upstream,
                               "downstream": downstream}
 
+    built_note = "" if lineage_built else _NOT_BUILT_NOTE
     queriers = _route(router, table=table)
     if not queriers:
-        result["note"] = _OFFLINE_NOTE
+        _set_note(result, built_note, _OFFLINE_NOTE)
         return result
+    _set_note(result, built_note)
 
     # bind 名避开 Oracle 保留字 TABLE(ORA-01745): 用 :tbl。
     params = {"tbl": table}
@@ -365,24 +394,28 @@ def lookup_sequence(engine: Engine, *, name: str,
 
     # 本地: sql_templates 里字面提到该 sequence 名的模板(代码引用线索)。
     tpl = store.sql_templates
+    lineage_built = bool(store.existing_tables(engine, tpl.name))
     code_refs: list[dict[str, Any]] = []
-    with engine.connect() as conn:
-        for r in conn.execute(
-            select(tpl.c.template_id, tpl.c.source_file, tpl.c.container)
-            .where(tpl.c.sql_text.contains(name))
-            .limit(50)
-        ):
-            m = r._mapping
-            code_refs.append({"template_id": m["template_id"],
-                              "source_file": m["source_file"],
-                              "container": m["container"]})
+    if lineage_built:
+        with engine.connect() as conn:
+            for r in conn.execute(
+                select(tpl.c.template_id, tpl.c.source_file, tpl.c.container)
+                .where(tpl.c.sql_text.contains(name))
+                .limit(50)
+            ):
+                m = r._mapping
+                code_refs.append({"template_id": m["template_id"],
+                                  "source_file": m["source_file"],
+                                  "container": m["container"]})
 
     result: dict[str, Any] = {"name": name, "sequence": None, "code_refs": code_refs}
 
+    built_note = "" if lineage_built else _NOT_BUILT_NOTE
     queriers = _route(router, table=name)
     if not queriers:
-        result["note"] = _OFFLINE_NOTE
+        _set_note(result, built_note, _OFFLINE_NOTE)
         return result
+    _set_note(result, built_note)
 
     for q in queriers:
         try:

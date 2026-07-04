@@ -33,6 +33,11 @@ def trace_method_dataflow(engine: Engine, *, source_path: str) -> list[dict[str,
     seen: set[str] = set()
     hits: list[dict[str, Any]] = []
 
+    # fresh 环境(血缘表族未建, 如只跑过 init --only code): 缺哪张表就跳过对应路径,
+    # 视同空血缘返回, 不裸抛 OperationalError(同 lineage/tools.py 各 lookup)。
+    present = store.existing_tables(engine, store.lineage_evidence.name,
+                                    store.lineage_edges.name, store.sql_templates.name)
+
     # 路径 A: java_table_refs 直查 -> v1 预期空(表不存在/无数据), 跳过。
     # (裁决 3: java_* 投影属 04b, 未建; 这里恒空, 直接降级 B。)
 
@@ -40,30 +45,33 @@ def trace_method_dataflow(engine: Engine, *, source_path: str) -> list[dict[str,
     # LIKE 通配符转义(reviewer Minor #2): source_path 里的 _ / % / \ 当字面 + :% 精确后缀
     # (evidence_ref 恒为 path:line), 避免 My_Dao.java 误命中 MyXDao.java。
     esc = source_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    with engine.connect() as conn:
-        ev_rows = conn.execute(
-            select(store.lineage_evidence.c.edge_id, store.lineage_evidence.c.evidence_ref)
-            .where(store.lineage_evidence.c.evidence_ref.like(f"{esc}:%", escape="\\"))
-        ).all()
-        edge_ids = {r.edge_id for r in ev_rows}
-        if edge_ids:
-            edge_rows = conn.execute(
-                select(store.lineage_edges).where(store.lineage_edges.c.edge_id.in_(edge_ids))
+    if {store.lineage_evidence.name, store.lineage_edges.name} <= present:
+        with engine.connect() as conn:
+            ev_rows = conn.execute(
+                select(store.lineage_evidence.c.edge_id, store.lineage_evidence.c.evidence_ref)
+                .where(store.lineage_evidence.c.evidence_ref.like(f"{esc}:%", escape="\\"))
             ).all()
-            for er in edge_rows:
-                m = er._mapping
-                for tbl in (m["src_table"], m["dst_table"]):
-                    if tbl and tbl not in seen:
-                        seen.add(tbl)
-                        hits.append(dict(table=tbl, relation_type=m["relation_type"],
-                                         source=_SRC_B,
-                                         evidence_ref=f"{source_path} (edge {m['edge_id']})"))
+            edge_ids = {r.edge_id for r in ev_rows}
+            if edge_ids:
+                edge_rows = conn.execute(
+                    select(store.lineage_edges).where(store.lineage_edges.c.edge_id.in_(edge_ids))
+                ).all()
+                for er in edge_rows:
+                    m = er._mapping
+                    for tbl in (m["src_table"], m["dst_table"]):
+                        if tbl and tbl not in seen:
+                            seen.add(tbl)
+                            hits.append(dict(table=tbl, relation_type=m["relation_type"],
+                                             source=_SRC_B,
+                                             evidence_ref=f"{source_path} (edge {m['edge_id']})"))
 
     # 路径 C: sql_templates 反查(B 未覆盖的表)
-    with engine.connect() as conn:
-        tpl_rows = conn.execute(
-            select(store.sql_templates).where(store.sql_templates.c.source_file == source_path)
-        ).all()
+    tpl_rows = []
+    if store.sql_templates.name in present:
+        with engine.connect() as conn:
+            tpl_rows = conn.execute(
+                select(store.sql_templates).where(store.sql_templates.c.source_file == source_path)
+            ).all()
     for tr in tpl_rows:
         sql_text = tr._mapping["sql_text"]
         template_id = tr._mapping["template_id"]
