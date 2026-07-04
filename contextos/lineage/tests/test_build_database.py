@@ -186,3 +186,19 @@ def test_build_database_skip_oracle_static_only(tmp_path):
         prof, e, now="2026-06-07T00:00:00", repo_root=_repo(tmp_path), skip_oracle=True)
     assert out["oracle_status"] == "offline"
     assert "lineage" in out and store.all_table_metadata(e) == []
+
+
+def test_build_database_fresh_db_creates_tables_first(tmp_path):
+    """fresh-env 家族第三成员回归锚(2026-07-04 rc.3 真机抓到): fresh 库(不 create_all)
+    直接跑 database 维, 元数据 refresh 的 DELETE+写必须能落 —— 修前在真连拉完元数据后
+    裸炸 no such table: table_metadata。评分标准: 与 connected 用例同输入下, fresh 库
+    照样 connected 且元数据/路由真实落库, 零 OperationalError。"""
+    e = make_engine("sqlite://")                      # 关键: 不 create_all
+    prof = _profile(["A", "B"])
+    owners = {"A": ["UPC"], "B": ["SEC"]}
+    out = build_database.build_database_dimension(
+        prof, e, now="2026-07-04T00:00:00", repo_root=_repo(tmp_path),
+        connect=lambda tns: _Q(tns, owners[tns]))
+    assert out["oracle_status"] == "connected"
+    assert {r["db_name"] for r in store.all_table_metadata(e)} == {"A", "B"}
+    assert store.all_owner_routing(e) == {"UPC": "A", "SEC": "B"}

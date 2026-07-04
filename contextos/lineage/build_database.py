@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from contextos.lineage import store
 from contextos.lineage.dblink_resolve import build_index_from_store
 from contextos.lineage.object_lineage import build_object_lineage
 from contextos.lineage.oracle_metadata import (
@@ -41,6 +42,12 @@ def _default_connect(profile: Any) -> Callable[[str], Any]:
 def build_database_dimension(profile: Any, engine: Any, *, now: str, repo_root: Path,
                              skip_oracle: bool = False,
                              connect: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    # fresh-env 家族第三成员(2026-07-04 rc.3 真跑抓到): 元数据 refresh 的原子覆盖
+    # (DELETE+写)跑在建表之前 -- fresh 库(clone 后直接 init --only database)真连
+    # Oracle 拉完 81s 元数据后 DELETE FROM table_metadata 裸炸。database 维拥有这族表,
+    # 入口先 idempotent 建表(同 init/orchestrator 给 config 维保表的先例); 更晚的
+    # pipeline/object_lineage 内 create_all 不受影响。
+    store.create_all(engine)
     result: dict[str, Any] = {"oracle_status": "offline", "owners": {}, "detail": ""}
     # None = 离线/降级老行为(NameResolver 剥 @dblink 不富化, spec §4.2); 连上才填解析字典
     dblink_index: dict[str, str] | None = None
