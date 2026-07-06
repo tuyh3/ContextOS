@@ -116,11 +116,22 @@ def test_solidlsp_top_level_alias_works():
     assert Language.JAVA.value == "java"
 
 
-def test_jdtls_runtime_from_profile() -> None:
+def test_jdtls_runtime_from_profile(monkeypatch) -> None:
+    """占位路径(/jdtls 等)不在磁盘上, from_profile 走的 resolve_effective_runtime
+    会先探 <cwd>/runtime/contextos-runtime bundle 是否存在(spec A11 优先级)——
+    本测验证的是 profile 值经 from_profile 原样传递(深校验通过即用配置值)/
+    expanduser, 不是"探不到 bundle 才回退"这条支路, 钉死 discover_runtime_bundle
+    返回 None 使其与真实开发机(此仓根即带真 bundle)的 cwd 状态解耦(hermetic,
+    同 test_health_jdtls_probe.py 的钉法先例, 借鉴的是"钉死 bundle 探测"这个
+    手法而非其 autouse 作用域, 本测就地 monkeypatch 不搬 fixture)。"""
     from pathlib import Path
 
     from contextos.code_intel.jdtls_provider.config import JdtlsRuntimeConfig
     from contextos.profile.schema import Profile
+
+    import contextos.code_intel.jdtls_provider.discovery as D
+    monkeypatch.setattr(D, "discover_runtime_bundle",
+                        lambda repo=None, platform_config=None: None)
 
     profile = Profile(**{
         "llm": {"provider": "claude", "api_key_env": "K"},
@@ -146,15 +157,24 @@ def test_jdtls_runtime_from_profile() -> None:
     assert rt.java_home == str(Path("/jre21"))
 
 
-def test_jdtls_runtime_from_profile_expands_tilde() -> None:
+def test_jdtls_runtime_from_profile_expands_tilde(monkeypatch) -> None:
     """profile.example.toml uses ~/.vscode/... paths; from_profile must
     expand them so eclipse_jdtls.py (which wraps in Path() without expanding)
-    sees an absolute path."""
+    sees an absolute path.
+
+    同上一测: 占位路径不存在 -> resolve_effective_runtime 会先探
+    <cwd>/runtime/contextos-runtime bundle。钉死 discover_runtime_bundle 返回
+    None, 隔离掉这仓根真带 bundle 的环境状态, 让本测只验 expanduser 传递链路
+    (profile-unverified 支路), 不验 bundle 回退支路。"""
     import os
     from pathlib import Path
 
     from contextos.code_intel.jdtls_provider.config import JdtlsRuntimeConfig
     from contextos.profile.schema import Profile
+
+    import contextos.code_intel.jdtls_provider.discovery as D
+    monkeypatch.setattr(D, "discover_runtime_bundle",
+                        lambda repo=None, platform_config=None: None)
 
     profile = Profile(**{
         "llm": {"provider": "claude", "api_key_env": "K"},

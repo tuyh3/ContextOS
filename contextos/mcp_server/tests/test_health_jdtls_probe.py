@@ -46,7 +46,10 @@ def _no_real_runtime_bundle(monkeypatch):
 def _ctx(tmp_path, *, jdtls_exists=True, deep_valid=True, java_ok=True,
          lombok_is_dir=False, indexer_jar=None):
     """深校验合成布局(默认全绿): server/plugins/launcher + 平台 config + lombok 文件
-    + jre/bin/java。各开关造单腿残缺形态; indexer_jar 给值才挂 code_index 命名空间。"""
+    + jre/bin/java。indexer_jar 不给值时落一个必不存在的占位路径 ——
+    resolve_effective_runtime(spec A11)无条件读 profile.code_index.indexer_jar 算
+    indexer_source, 没有该命名空间会直接 AttributeError(探针 except 兜成 error,
+    掩盖真正待测分支)。"""
     server = tmp_path / "server"
     (server / "plugins").mkdir(parents=True)
     if deep_valid:
@@ -67,8 +70,9 @@ def _ctx(tmp_path, *, jdtls_exists=True, deep_valid=True, java_ok=True,
         java_home=str(jre),
     )
     profile = SimpleNamespace(jdtls_runtime=rt)
-    if indexer_jar is not None:
-        profile.code_index = SimpleNamespace(indexer_jar=indexer_jar)
+    profile.code_index = SimpleNamespace(
+        indexer_jar=indexer_jar if indexer_jar is not None
+        else str(tmp_path / "no-such-indexer.jar"))
     return SimpleNamespace(profile=profile)
 
 
@@ -87,7 +91,7 @@ def _mk_runtime_tree(root: Path) -> Path:
 
 
 def test_probe_ok_when_all_paths_exist(tmp_path):
-    assert _probe_jdtls_runtime(_ctx(tmp_path)) == {"status": "ok"}
+    assert _probe_jdtls_runtime(_ctx(tmp_path)) == {"status": "ok", "source": "profile"}
 
 
 def test_probe_missing_with_suggestion_when_vscode_found(tmp_path, monkeypatch):
@@ -100,7 +104,7 @@ def test_probe_missing_with_suggestion_when_vscode_found(tmp_path, monkeypatch):
     )
     out = _probe_jdtls_runtime(_ctx(tmp_path, jdtls_exists=False))
     assert out["status"] == "missing"
-    assert out["missing"] == ["jdtls_path"]
+    assert out["missing"] == ["jdtls_path 不是目录"]
     assert out["suggestion"]["jdtls_path"] == "/x/server"
     assert out["suggestion"]["source"] == "redhat.java-9.9.9-test"
 
@@ -123,8 +127,12 @@ def test_probe_never_raises_on_broken_ctx():
 
 
 def test_probe_runtime_bundle_preferred_over_vscode(tmp_path, monkeypatch):
-    """spec C1 顺序: profile 三路径缺 + runtime/ 四件套在 -> suggestion 来自
-    runtime-bundle(四行含 indexer_jar, 全绝对路径), 即便 VSCode 扩展也探得到。"""
+    """spec A6/C1 顺序: profile 三路径缺 + runtime/ 四件套在 -> resolver 判定
+    trio_source="runtime-bundle" -> 探针 status=ok(自动可用), suggestion 来自
+    runtime-bundle(四行含 indexer_jar, 全绝对路径), 即便 VSCode 扩展也探得到
+    (spec A6 后不再走原 missing 支路, VSCode 探测不再参与 —— bundle 优先级更高,
+    profile-unverified 才轮到 VSCode 建议, 见 test_probe_missing_with_suggestion_
+    when_vscode_found)。"""
     import contextos.code_intel.jdtls_provider.discovery as D
     _mk_runtime_tree(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -136,7 +144,8 @@ def test_probe_runtime_bundle_preferred_over_vscode(tmp_path, monkeypatch):
             java_home="/x/jre/21", source="redhat.java-9.9.9-test"),
     )
     out = _probe_jdtls_runtime(_ctx(tmp_path, jdtls_exists=False))
-    assert out["status"] == "missing"
+    assert out["status"] == "ok"
+    assert out["source"] == "runtime-bundle (fallback)"
     sug = out["suggestion"]
     assert sug["source"] == "runtime-bundle"
     assert "indexer_jar" in sug
@@ -162,17 +171,18 @@ def test_probe_profile_ok_still_suggests_indexer(tmp_path, monkeypatch):
 
 
 def test_probe_ok_no_indexer_suggestion_when_jar_exists(tmp_path):
-    """反遮蔽的反向守卫: indexer jar 真在 -> 不给多余建议(输出保持精确 {"status":"ok"})。"""
+    """反遮蔽的反向守卫: indexer jar 真在 -> 不给多余建议(输出保持精确
+    {"status":"ok","source":"profile"})。"""
     jar = tmp_path / "java-indexer.jar"
     jar.write_bytes(b"PK")
     out = _probe_jdtls_runtime(_ctx(tmp_path, indexer_jar=str(jar)))
-    assert out == {"status": "ok"}
+    assert out == {"status": "ok", "source": "profile"}
 
 
 def test_probe_ok_indexer_missing_but_no_bundle_stays_plain_ok(tmp_path):
     """indexer jar 缺但 bundle 探不到(autouse 钉 None)-> 无从建议, 保持裸 ok 不报错。"""
     out = _probe_jdtls_runtime(_ctx(tmp_path, indexer_jar=str(tmp_path / "nope.jar")))
-    assert out == {"status": "ok"}
+    assert out == {"status": "ok", "source": "profile"}
 
 
 # ------------------------------------------------------------- profile 三路径深校验(spec C4)
@@ -194,7 +204,7 @@ def test_probe_deep_catches_java_home_without_java(tmp_path, monkeypatch):
     monkeypatch.setattr(D, "discover_vscode_jdtls", lambda home=None: None)
     out = _probe_jdtls_runtime(_ctx(tmp_path, java_ok=False))
     assert out["status"] == "missing"
-    assert any(m.startswith("java_home(深校验)") for m in out["missing"])
+    assert any(m.startswith("java_home") and "深校验" in m for m in out["missing"])
 
 
 def test_probe_deep_catches_lombok_dir_not_file(tmp_path, monkeypatch):
@@ -203,4 +213,58 @@ def test_probe_deep_catches_lombok_dir_not_file(tmp_path, monkeypatch):
     monkeypatch.setattr(D, "discover_vscode_jdtls", lambda home=None: None)
     out = _probe_jdtls_runtime(_ctx(tmp_path, lombok_is_dir=True))
     assert out["status"] == "missing"
-    assert any(m.startswith("lombok_path(深校验)") for m in out["missing"])
+    assert any(m.startswith("lombok_path") for m in out["missing"])
+
+
+# ------------------------------------------------------------- spec A6: 展示生效来源(resolver 消费)
+
+
+def test_probe_reports_profile_source(tmp_path):
+    """spec A6: profile 三路径深校验有效 -> {"status": "ok", "source": "profile"}
+    (治现状 ok 无 source 字段, 排障时分不清"我配的生效"还是"包内 bundle 兜底生效")。"""
+    out = _probe_jdtls_runtime(_ctx(tmp_path))
+    assert out["status"] == "ok"
+    assert out["source"] == "profile"
+
+
+def test_probe_reports_bundle_fallback(tmp_path, monkeypatch):
+    """spec A6: profile 占位(未过深校验)+ cwd 合成 runtime bundle 四件套 ->
+    status=ok, source="runtime-bundle (fallback)", suggestion 四行(值=bundle 路径),
+    hint 讲清"当前用的是包内运行时, 想钉死路径可照抄 suggestion 进 profile"。"""
+    import contextos.code_intel.jdtls_provider.discovery as D
+    _mk_runtime_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(D, "discover_runtime_bundle", _real_discover_runtime_bundle)
+
+    ctx = _ctx(tmp_path, jdtls_exists=False)
+    out = _probe_jdtls_runtime(ctx)
+
+    assert out["status"] == "ok"
+    assert out["source"] == "runtime-bundle (fallback)"
+    sug = out["suggestion"]
+    for key in ("jdtls_path", "lombok_path", "java_home", "indexer_jar"):
+        assert Path(sug[key]).is_absolute()
+    assert sug["jdtls_path"] == (tmp_path / "runtime" / "contextos-runtime" / "jdtls").as_posix()
+    assert sug["java_home"] == (tmp_path / "runtime" / "contextos-runtime" / "jre").as_posix()
+    assert ("钉死" in out["hint"]) or ("照抄" in out["hint"])
+
+
+def test_probe_bundle_fallback_keeps_users_own_indexer_jar(tmp_path, monkeypatch):
+    """spec A5 独立判定的混合态: trio 占位无效(触发 bundle 兜底)+ 用户自己的
+    code_index.indexer_jar 指向真实存在的 jar(不是 bundle 里那份)+ cwd 合成 bundle
+    树 —— trio_source 走 "runtime-bundle", 但 indexer_source 各自独立判定(A5),
+    jar 真在 -> 仍是 "profile", suggestion 里的 indexer_jar 必须是用户自己那份
+    jar(as_posix 形), 不能被 trio 判定捎带覆盖成 bundle 里的 java-indexer.jar。"""
+    import contextos.code_intel.jdtls_provider.discovery as D
+    _mk_runtime_tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(D, "discover_runtime_bundle", _real_discover_runtime_bundle)
+
+    own_jar = tmp_path / "my-indexer.jar"
+    own_jar.write_bytes(b"PK")
+    ctx = _ctx(tmp_path, jdtls_exists=False, indexer_jar=str(own_jar))
+    out = _probe_jdtls_runtime(ctx)
+
+    assert out["status"] == "ok"
+    assert out["source"] == "runtime-bundle (fallback)"
+    assert out["suggestion"]["indexer_jar"] == own_jar.resolve().as_posix()

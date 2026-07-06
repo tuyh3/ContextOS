@@ -42,7 +42,6 @@ MCP tool(@mcp.tool()),异常转 ToolError(不裸传 traceback 给不可信 host,
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -71,34 +70,63 @@ def health_check_impl(app_ctx: Any) -> dict[str, Any]:
 
 
 def _probe_jdtls_runtime(app_ctx: Any) -> dict[str, Any]:
-    """profile [jdtls_runtime] 三路径存在性 + 深校验(spec C4: launcher jar / 平台
-    config / lombok 是文件 / java_home 有 bin/java —— 治"浅 exists 假 ok, 照抄后
-    init 才炸"); 缺失时按 spec C1 顺序探测建议: 先 <cwd>/runtime/contextos-runtime
-    官方 bundle(suggestion 四行含 indexer_jar, 全绝对路径, spec C2), 探不到再本机
-    VSCode redhat.java 扩展(三行), 都没有给安装指引。profile 三路径 ok 时仍单独查
-    code_index.indexer_jar(C1 反遮蔽: 用 VSCode 扩展的用户也要收到 bundle 里现成的
-    java-indexer.jar 建议, 否则继续撞"自己 mvn build"的旧摩擦)。
+    """展示生效来源(spec A6): 判定段改为调 resolver(resolve_effective_runtime),
+    与 init/rebuild 实际取路径同一把尺, 防两套定义漂移。
+
+    三态:
+    - trio_source == "profile": profile 三路径深校验有效 -> {"status":"ok",
+      "source":"profile"}(仍单独查 indexer_source, C1 反遮蔽见 _maybe_suggest_indexer_jar)。
+    - trio_source == "runtime-bundle": profile 未过深校验但 cwd 下 runtime bundle
+      四件套齐全 -> {"status":"ok","source":"runtime-bundle (fallback)",
+      suggestion 四行(值=bundle 路径), hint 讲清"当前用包内运行时, 想钉死路径可
+      照抄 suggestion 进 profile"}。
+    - trio_source == "profile-unverified": 两边都没有(即 resolver 已判定 bundle
+      缺席), 维持原 missing 探测支路(spec C1 顺序: bundle 建议 -> VSCode 扩展建议
+      -> 安装指引), missing 清单仍用 _deep_validate_profile_runtime(委托版)取,
+      行为与改造前一致。
+
     只探不写(回写 human-gated); 返回 dict 非 str, 因为 suggestion 是结构化内容。"""
     try:
-        r = app_ctx.profile.jdtls_runtime
-        missing = [
-            name for name, raw in (
-                ("jdtls_path", r.jdtls_path),
-                ("lombok_path", r.lombok_path),
-                ("java_home", r.java_home),
-            ) if not Path(raw).expanduser().exists()
-        ]
-        if not missing:
-            missing = _deep_validate_profile_runtime(r)
-        if not missing:
-            out: dict[str, Any] = {"status": "ok"}
-            _maybe_suggest_indexer_jar(app_ctx, out)
+        from contextos.code_intel.jdtls_provider.discovery import (
+            resolve_effective_runtime,
+        )
+        rt = resolve_effective_runtime(app_ctx.profile, root=Path.cwd())
+        if rt.trio_source == "profile":
+            out: dict[str, Any] = {"status": "ok", "source": "profile"}
+            _maybe_suggest_indexer_jar(rt, out)
             return out
+        if rt.trio_source == "runtime-bundle":
+            return {
+                "status": "ok",
+                "source": "runtime-bundle (fallback)",
+                "suggestion": {
+                    "jdtls_path": rt.jdtls_path,
+                    "lombok_path": rt.lombok_path,
+                    "java_home": rt.java_home,
+                    "indexer_jar": rt.indexer_jar,
+                    "source": "runtime-bundle",
+                },
+                "hint": (
+                    "当前自动使用包内运行时; 想钉死路径可把 suggestion 照抄进 profile "
+                    "[jdtls_runtime](三路径)+ [code_index].indexer_jar(TOML 里 Windows "
+                    "路径用正斜杠)"
+                ),
+            }
+        # trio_source == "profile-unverified": profile 未过深校验且 bundle 也探不到,
+        # 维持原 missing 探测支路(spec C1 顺序, 此支路本身即为 bundle 缺席态), 与
+        # 改造前行为一致。
+        r = app_ctx.profile.jdtls_runtime
+        missing = _deep_validate_profile_runtime(r)
         from contextos.code_intel.jdtls_provider.discovery import (
             discover_runtime_bundle,
             discover_vscode_jdtls,
         )
         out = {"status": "missing", "missing": missing}
+        # 注意: 走到这里 resolver 已经用同一把尺(root=Path.cwd())判过 bundle 不在
+        # (否则 trio_source 会是 "runtime-bundle" 而不会进这个 elif 分支), 所以下面
+        # 这次 discover_runtime_bundle() 重探构造性恒返回 None —— 不是活路径, 是
+        # unverified 态已蕴含的同锚探测结果, 留作逐字保留 + TOCTOU(检查和使用之间状态
+        # 变化)兜底, 别误读成"这里还有机会探到 bundle"。
         bundle = discover_runtime_bundle()
         if bundle is not None:
             out["suggestion"] = {
@@ -137,41 +165,29 @@ def _probe_jdtls_runtime(app_ctx: Any) -> dict[str, Any]:
 
 
 def _deep_validate_profile_runtime(r: Any) -> list[str]:
-    """三路径都 exists 后的深校验(spec C4 顺带条款: profile 支路同款判据升级)。
-
-    返回缺陷清单(空 = 通过); 条目带"(深校验)"标记与浅 missing 区分, 用户能看懂
-    是"路径在但内容残缺"而非填错路径。三条腿: jdtls 目录要有 launcher jar + 当前
-    平台 config_*(validate_jdtls_layout); lombok 要是文件非目录; java_home 下要有
-    bin/java(win 为 java.exe)—— 全是 JDT LS 真实启动的硬前提。"""
-    from contextos.code_intel.jdtls_provider.discovery import validate_jdtls_layout
-
-    problems: list[str] = []
-    reason = validate_jdtls_layout(Path(r.jdtls_path).expanduser())
-    if reason is not None:
-        problems.append(f"jdtls_path(深校验): {reason}")
-    if not Path(r.lombok_path).expanduser().is_file():
-        problems.append("lombok_path(深校验): 不是常规 jar 文件")
-    java = Path(r.java_home).expanduser() / "bin" / (
-        "java.exe" if sys.platform == "win32" else "java")
-    if not java.is_file():
-        problems.append(f"java_home(深校验): 缺 bin/{java.name} 可执行")
-    return problems
+    """委托 discovery.validate_profile_runtime_paths(resolver/health 同一把尺,
+    spec A11)。那边把浅 exists + 深校验合并成一段, 这里不再重复判定逻辑。"""
+    from contextos.code_intel.jdtls_provider.discovery import (
+        validate_profile_runtime_paths,
+    )
+    return validate_profile_runtime_paths(r)
 
 
-def _maybe_suggest_indexer_jar(app_ctx: Any, out: dict[str, Any]) -> None:
-    """spec C1 反遮蔽: profile 三路径 ok 也单独查 code_index.indexer_jar —— 默认值指
-    vendor gitignored 路径, 用 VSCode 扩展的用户没有 bundle suggestion 入口, 这行
-    补充建议是他们唯一能收到现成 indexer 的地方。best-effort: 任何异常吞掉,
-    绝不把 ok 拖成 error(补充建议非判定;jar 解析走 projection/paths chokepoint)。"""
+def _maybe_suggest_indexer_jar(rt: Any, out: dict[str, Any]) -> None:
+    """spec C1 反遮蔽(Task 7 改: 消费 resolver 算好的 indexer_source, 不再自己
+    重复解析) —— 默认值指 vendor gitignored 路径, 用 VSCode 扩展的用户没有 bundle
+    suggestion 入口, 这行补充建议是他们唯一能收到现成 indexer 的地方。best-effort:
+    任何异常吞掉, 绝不把 ok 拖成 error(补充建议非判定)。
+
+    rt: resolve_effective_runtime() 的返回值(EffectiveRuntime), 由调用方
+    (_probe_jdtls_runtime 的 profile 分支)算好后传入 —— 出处(indexer_source)而非
+    存在性判定"要不要建议", 避免与 trio 判定分开重复解析走漂(spec A11 同一把尺)。
+    rt.indexer_source == "runtime-bundle" 时才建议(即"配置的原始 jar 缺、bundle
+    兜底生效"这一态); "profile"(配置值本身生效)或 "profile-unverified"(两边都
+    没有, 无从建议)均不附加。"""
     try:
-        from contextos.code_intel.jdtls_provider.discovery import discover_runtime_bundle
-        from contextos.code_intel.projection.paths import indexer_jar as _resolve_indexer_jar
-
-        if _resolve_indexer_jar(app_ctx.profile).exists():
-            return
-        bundle = discover_runtime_bundle()
-        if bundle is not None:
-            out["indexer_jar_suggestion"] = bundle.indexer_jar
+        if rt.indexer_source == "runtime-bundle":
+            out["indexer_jar_suggestion"] = rt.indexer_jar
             out["hint"] = (
                 "code_index.indexer_jar 指向的 jar 不存在, 但 runtime bundle 里有现成的; "
                 "把 indexer_jar_suggestion 填进 profile [code_index].indexer_jar(绝对路径)"

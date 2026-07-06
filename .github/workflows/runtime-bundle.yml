@@ -1,6 +1,8 @@
-# runtime-bundle 发布链(spec D1-D6)。job 顺序铁律: build 只产 artifact -> verify-linux
-# 用真 bundle 跑通 init+health 严格断言 -> 全部验过 upload-release 才挂 Release ——
-# 验证失败时 Release 上绝不能已经躺着坏包(--clobber 会拿坏包覆盖好包)。
+# runtime-bundle 发布链(spec D1-D6, 完整包 spec A7-A9)。job 顺序铁律: build 只产
+# 完整包 artifact(源码树+runtime 合装, --source-ref)-> verify-linux 解包后在包内
+# 跑 init+health, profile 走占位路径强制回退到包内 runtime bundle, 严格断言回退来源
+# -> 全部验过 upload-release 才挂 Release —— 验证失败时 Release 上绝不能已经躺着
+# 坏包(--clobber 会拿坏包覆盖好包)。
 name: runtime-bundle
 
 on:
@@ -54,10 +56,14 @@ jobs:
       - name: License gate (fail-closed)
         run: ./scripts/check-indexer-licenses.sh
 
+      # --source-ref "$TAG"(spec A7/A9): 只出完整包(源码树 + runtime 合装),
+      # 命名 contextos-<TAG>-<platform>.tar.gz/zip, 顶层目录 contextos-<TAG>/,
+      # 内含 runtime/contextos-runtime/。省略此参数则只出 runtime-only 包(旧行为),
+      # 但 verify-linux 现在要在完整包内跑, 必须传。
       - name: Build 4 bundles
         env:
           TAG: ${{ inputs.tag }}
-        run: ./scripts/build-runtime-bundle.sh --version "$TAG" --out dist/
+        run: ./scripts/build-runtime-bundle.sh --version "$TAG" --source-ref "$TAG" --out dist/
 
       # 只产 artifact, 不碰 Release(顺序铁律)
       - uses: actions/upload-artifact@v4
@@ -76,26 +82,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag }}
-          fetch-depth: 1            # 只要源码跑 uv, 不需要 tags / 全历史
+      # checkout 不再需要: verify 现在完全在解出的完整包内跑(包自含源码树 = build job
+      # git archive 出的 SOURCE_SHA, 与本 job 若做 checkout 会拿到的树同源); 合成工程建在
+      # /tmp/proj, uv sync/contextos 全部命令都 cd 进 $PKG_DIR 后执行, 不依赖本 job 的工作区
+      # 有源码。留着 checkout 只会让"验的是包内代码"这条断言变得可疑(两份源码树, 万一漂移
+      # 就分不清测的是哪份) —— 去掉。
 
       - uses: actions/download-artifact@v4
         with:
           name: bundles
           path: dist/
 
+      # 本 job 无 checkout -> setup-uv 缓存 glob(默认 **/uv.lock)必落空, 会打
+      # "No file matched..." warning: 预期且无害(只影响缓存 key; uv sync --frozen
+      # 正确性来自包内 uv.lock), 不是故障。
       - uses: astral-sh/setup-uv@v5
 
-      - name: Install rg + unpack linux bundle
+      # 解完整包(spec A7/A9): build job 用 --source-ref 出的是 contextos-<TAG>/ 顶层目录,
+      # 内含源码树 + runtime/contextos-runtime/ 合装。PKG_DIR 落 GITHUB_ENV 供后续步骤用
+      # (每个 step 是独立 shell, 变量不跨 step 存活, 必须走 env 文件)。
+      - name: Install rg + unpack full package
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
-          mkdir -p runtime
-          # glob 与打包名一致: build 脚本 PKG_BASE="contextos-runtime-<ver>-linux-x64.tar.gz"
-          tar -xzf dist/contextos-runtime-*-linux-x64.tar.gz -C runtime
+          mkdir -p /tmp/pkg
+          tar -xzf dist/contextos-*-linux-x64.tar.gz -C /tmp/pkg
+          PKG_DIR="$(echo /tmp/pkg/contextos-*)"
+          [ -d "$PKG_DIR" ] || { echo "包顶层目录缺失或多匹配: PKG_DIR=$PKG_DIR"; ls /tmp/pkg; exit 1; }
+          [ ! -e "$PKG_DIR/.git" ] || { echo "包内不应有 .git(git archive 不应带 .git, 有则打包路径出错)"; exit 1; }
+          echo "PKG_DIR=$PKG_DIR" >> "$GITHUB_ENV"
           # 早期 smoke: bundle JRE 可执行(比深链路里报错可读得多)
-          ./runtime/contextos-runtime/jre/bin/java -version
+          "$PKG_DIR/runtime/contextos-runtime/jre/bin/java" -version
 
       # 合成工程 = Eclipse 工程形(.project/.classpath), JDT LS 原生离线导入。
       # 本地校准实测(mac, 同 bundle 布局):
@@ -143,10 +159,14 @@ jobs:
           }
           JAVA
           # 最小合法 profile(全量键模板 = contextos/cli/tests/test_suggest_stop_keywords.py
-          # 的 _write_min_profile, 本地实测 pydantic 合法)。不改 example 范本(占位 /path/to
-          # 遍地雷)。heredoc 不 quote: 要展开 $RT/$PWD 成绝对路径。
-          RT="$PWD/runtime/contextos-runtime"
-          cat > config/profile.toml <<TOML
+          # 的 _write_min_profile, 本地实测 pydantic 合法), 写进包内 config/profile.toml
+          # (verify 在包内跑, data_dir 也落包内 database/, 不碰本 job 工作区)。
+          # [jdtls_runtime] 三路径改占位 + [code_index] 段整个删除(spec A7): 强制两边
+          # 都判定"未配置有效值", resolve_effective_runtime 落到 runtime-bundle 回退分支,
+          # 用包内 runtime/contextos-runtime/ 四件套(删段后缺省值指向 vendor/java-indexer/target/
+          # 相对路径, 包里没有, 正是要验的回退触发条件)。
+          # heredoc 不 quote 定界符: 要展开 $PKG_DIR 成绝对路径($RT 不再需要)。
+          cat > "$PKG_DIR/config/profile.toml" <<TOML
           [llm]
           provider = "fake"
           api_key_env = "K"
@@ -162,22 +182,20 @@ jobs:
           translation_provider = "main_llm"
           fallback_provider = "x"
           [storage]
-          data_dir = "$PWD/database"
+          data_dir = "$PKG_DIR/database"
           [ingestion]
           default_cleanup = "full"
           chunk_strategy = "h2_h3"
           min_chunk_chars = 30
           [jdtls_runtime]
-          jdtls_path = "$RT/jdtls"
-          lombok_path = "$RT/lombok.jar"
-          java_home = "$RT/jre"
+          jdtls_path = "/nonexistent/jdtls"
+          lombok_path = "/nonexistent/lombok.jar"
+          java_home = "/nonexistent/jre"
           [oracle]
           tns_admin = "/t"
           allowed_instances = ["TEST_DB1"]
           [code]
           source_roots = ["/tmp/proj"]
-          [code_index]
-          indexer_jar = "$RT/java-indexer.jar"
           [[projects]]
           name = "synthetic"
           path = "/tmp/proj"
@@ -185,24 +203,27 @@ jobs:
           build_system = "gradle"
           TOML
 
-      # 真链路(spec E5): bundle 的 jdtls+jre+lombok+indexer 全走一遍 init, 再 health 严格断言。
+      # 真链路(spec A7/E5): profile 占位路径必判无效, 落到包内 runtime bundle 回退
+      # (jdtls+jre+lombok+indexer 全走一遍 init), 再 health 严格断言回退来源。
       # init exit code 即闸门(ready=0 / degraded=1 / aborted=2), 任何降级都挡上传。
-      - name: init + strict asserts (spec E5)
+      - name: init + strict asserts inside package (spec A7/E5)
         run: |
+          cd "$PKG_DIR"
           uv sync --frozen
           uv run contextos init --only code --skip-oracle
           uv run contextos health > /tmp/h.json
           python3 - <<'PY'
-          import json, sqlite3
-          # 键路径 / 表名 / db 路径均本地校准实测: health 输出 = {"health": {"code_projection":
-          # {"status": ..., "build_id": ...}}}, db = <data_dir>/contextos.db
-          h = json.load(open("/tmp/h.json"))["health"]["code_projection"]
-          assert h["status"] == "ok" and h.get("build_id"), h    # 严格: not_built / degraded 都不放行
-          db = sqlite3.connect("database/contextos.db")
+          import json, os, sqlite3
+          h = json.load(open("/tmp/h.json"))["health"]
+          jr = h["jdtls_runtime"]
+          assert jr["status"] == "ok" and jr.get("source") == "runtime-bundle (fallback)", jr
+          cp = h["code_projection"]
+          assert cp["status"] == "ok" and cp.get("build_id"), cp
+          db = sqlite3.connect(os.environ["PKG_DIR"] + "/database/contextos.db")
           for t in ("code_classes", "code_methods"):
               n = db.execute(f"select count(*) from {t}").fetchone()[0]
               assert n > 0, f"{t} empty"
-          print("E5 strict asserts OK")
+          print("A7/E5 strict asserts OK")
           PY
 
   upload-release:

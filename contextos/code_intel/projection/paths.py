@@ -30,7 +30,12 @@ def resolve_source_roots(profile: Any) -> list[Path]:
 
 
 def indexer_jar(profile: Any) -> Path:
-    """[code_index].indexer_jar 解析 chokepoint(NIT-1 最终 review): 相对路径挂 cwd
-    (仓根约定)。rebuild_entry / init 共用, 不许各自手写拼路径。"""
-    jar = Path(profile.code_index.indexer_jar).expanduser()
+    """[code_index].indexer_jar 解析 chokepoint —— 经 resolver(spec A11):
+    配置 jar 存在用配置值(posix 绝对形), 缺失回退包内 java-indexer.jar;
+    双无效时 resolver 透传原串, 本处保旧契约: 相对路径挂 cwd(仓根约定)。
+    rebuild_entry / init 共用, 不许各自手写拼路径。"""
+    from contextos.code_intel.jdtls_provider.discovery import (
+        resolve_effective_runtime,
+    )
+    jar = Path(resolve_effective_runtime(profile, root=Path.cwd()).indexer_jar).expanduser()
     return jar if jar.is_absolute() else (Path.cwd() / jar)

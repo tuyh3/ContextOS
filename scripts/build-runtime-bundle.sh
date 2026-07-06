@@ -3,8 +3,9 @@
 # build-runtime-bundle.sh — 组装 ContextOS runtime bundle(JDT LS + JRE + lombok + java-indexer)
 #
 # 用法:
-#   ./scripts/build-runtime-bundle.sh [--platform win-x64|mac-arm64|mac-x64|linux-x64] [--out dist/] [--version <bundle_ver>]
+#   ./scripts/build-runtime-bundle.sh [--platform win-x64|mac-arm64|mac-x64|linux-x64] [--out dist/] [--version <bundle_ver>] [--source-ref <ref>]
 #   --platform 省略 = 四平台全打; --version 缺省 = dev(CI 传 release tag); --out 缺省 = <repo>/dist/
+#   --source-ref  按 git ref 合装源码树出完整包(只出完整包; 省略 = 只出 runtime-only 包)
 #
 # 机制:
 #   - 读 scripts/runtime-bundle/manifest.json(版本/URL/sha256 唯一 SSOT, 本脚本不硬编任何 sha)
@@ -21,6 +22,10 @@
 #     --download-texts(报告生成 + allowlist 校验 + license 全文下载), 任一红 -> 不出包;
 #     THIRD-PARTY.txt 与 license 全文拷入 bundle 的 licenses/, NOTICE.md 引用之。
 #     内网 mirror 环境需 MVN_SETTINGS 直连 central, 见 check-indexer-licenses.sh 头部。
+#   - 完整包模式(--source-ref, spec A9): 结构闸+内容泄漏闸(verify_source_ref)通过后,
+#     把闸验通过的 commit(SOURCE_SHA, 非按名重新解析)用 git archive 导出源码树, 与
+#     runtime bundle 合装成 contextos-<ver>/{...源码..., runtime/contextos-runtime/}, 再整体
+#     打包; 省略 --source-ref 则只出 runtime-only 包(旧行为不变, 不进闸)。
 #
 # 兼容性: bash 3.2(macOS 默认 /bin/bash 可跑; 不用关联数组等 bash 4 特性)。
 #
@@ -39,13 +44,16 @@ trap 'rm -rf "$CACHE_DIR"/staging-*' EXIT
 PLATFORM=""
 OUT_DIR="$REPO_ROOT/dist"
 BUNDLE_VER="dev"
+SOURCE_REF=""
+SOURCE_SHA=""
 
 usage() {
   cat <<EOF
-用法: $0 [--platform win-x64|mac-arm64|mac-x64|linux-x64] [--out <dir>] [--version <bundle_ver>]
-  --platform  只打指定平台; 省略 = 四平台全打
-  --out       归档输出目录(缺省 <repo>/dist/)
-  --version   包名里的版本段(缺省 dev; CI 传 release tag, 如 v0.1.0)
+用法: $0 [--platform win-x64|mac-arm64|mac-x64|linux-x64] [--out <dir>] [--version <bundle_ver>] [--source-ref <ref>]
+  --platform    只打指定平台; 省略 = 四平台全打
+  --out         归档输出目录(缺省 <repo>/dist/)
+  --version     包名里的版本段(缺省 dev; CI 传 release tag, 如 v0.1.0)
+  --source-ref  按 git ref 合装源码树出完整包(只出完整包; 省略 = 只出 runtime-only 包)
 EOF
 }
 
@@ -56,9 +64,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     # 取值 flag: 尾随裸 flag(后面没值)必须给话再死, 不许静默 exit(bash 3.2 下
     # "shift 空参数" 会被 set -e 无声杀掉, 之前就是这个坑)
-    --platform) [ -n "${2:-}" ] || { usage >&2; die "--platform 后缺取值"; }; PLATFORM="$2"; shift ;;
-    --out)      [ -n "${2:-}" ] || { usage >&2; die "--out 后缺取值"; };      OUT_DIR="$2";  shift ;;
-    --version)  [ -n "${2:-}" ] || { usage >&2; die "--version 后缺取值"; };  BUNDLE_VER="$2"; shift ;;
+    --platform)   [ -n "${2:-}" ] || { usage >&2; die "--platform 后缺取值"; };   PLATFORM="$2"; shift ;;
+    --out)        [ -n "${2:-}" ] || { usage >&2; die "--out 后缺取值"; };        OUT_DIR="$2";  shift ;;
+    --version)    [ -n "${2:-}" ] || { usage >&2; die "--version 后缺取值"; };    BUNDLE_VER="$2"; shift ;;
+    --source-ref) [ -n "${2:-}" ] || { usage >&2; die "--source-ref 后缺取值"; }; SOURCE_REF="$2"; shift ;;
     -h|--help)  usage; exit 0 ;;
     *) usage >&2; die "未知参数: $1" ;;
   esac
@@ -225,6 +234,44 @@ Built at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 }
 
+# spec A2: 结构闸 + 内容泄漏闸, fail-closed。
+# 全部 git 调用必须钉 -C "$REPO_ROOT": 本函数可能在别的仓目录下被调起(cwd != REPO_ROOT),
+# 裸 git 会验 cwd 仓的同名 ref, 而组装点(下方 git archive)钉的是 REPO_ROOT —— 闸门与
+# archive 分属两仓, 闸门形同虚设(spec review 实测复现: decoy 仓能让本仓闸门放行本仓的树)。
+# TOCTOU 防护: SOURCE_REF 是名字(tag/branch), 名字可在闸后被移动(重打 tag/branch 前进)。
+# 本函数把 ref 解出的 commit sha 落进脚本级变量 SOURCE_SHA, 闸内后续所有 git 对象访问
+# (ls-tree/leak_scan_tree/merge-base)与下方平台循环里的 git archive 全部改用 SOURCE_SHA
+# 而非 SOURCE_REF —— 闸验的树与实际打包的树必须是同一个 commit 对象, 不能各自按名重新解析。
+verify_source_ref() {
+  SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse --verify "$SOURCE_REF^{commit}")" || die "--source-ref 不是合法 ref: $SOURCE_REF"
+  tree_n() { git -C "$REPO_ROOT" ls-tree -r "$SOURCE_SHA" --name-only | { grep -cE "$1" || true; }; }
+  [ "$(tree_n '^docs/')" = "0" ]                        || die "源树闸: ref 含 docs/(像私有分支, 只接受公开快照 ref)"
+  [ "$(tree_n '^(CLAUDE|AGENTS)\.md$')" = "0" ]         || die "源树闸: ref 含 CLAUDE.md/AGENTS.md"
+  [ "$(tree_n '^scripts/publish-github\.sh$')" = "0" ]  || die "源树闸: ref 含发布脚本"
+  [ "$(tree_n '^scripts/leak-patterns\.sh$')" = "0" ]   || die "源树闸: ref 含泄漏模式文件"
+  [ "$(tree_n '^README\.md$')" = "1" ]                  || die "源树闸: ref 缺 README.md"
+  [ "$(tree_n '^LICENSE$')" = "1" ]                     || die "源树闸: ref 缺 LICENSE"
+  [ "$(tree_n '^runtime/')" = "0" ]                     || die "源树闸: ref 树内已含 runtime/(会与运行时合装路径嵌套冲突)"
+  unset -f tree_n
+  # 内容泄漏闸(spec A2): scanner 在场必扫全树; 不在场(公开检出, 如 CI)则
+  # 断言 ref 是公开 origin/main 祖先(= 发布期已过同款闸), 两样都不行 -> die。
+  if [ -f "$REPO_ROOT/scripts/leak-patterns.sh" ]; then
+    . "$REPO_ROOT/scripts/leak-patterns.sh"
+    # leak_scan_tree 内部是裸 git(它也供 publish-github.sh 用, 那边脚本开头已 cd 到仓根,
+    # 故不改 leak_scan_tree 本身); 这里用子 shell 包一层 cd, 让它与 archive 同一仓上下文,
+    # 且不污染本脚本其余部分的 cwd。
+    local n; n="$( (cd "$REPO_ROOT" && leak_scan_tree "$SOURCE_SHA") )"
+    [ "$n" = "0" ] || die "内容泄漏闸: ref 树内命中 $n 行敏感内容, 中止(spec A2)"
+  else
+    git -C "$REPO_ROOT" fetch --quiet origin main || die "无 leak-patterns.sh 且 fetch origin/main 失败, 无法断言 ref 已过发布闸(fail-closed)"
+    # merge-base 里的 FETCH_HEAD 属于 -C 那个仓的 .git(刚 fetch 写入的也是它), 语义自动跟对。
+    git -C "$REPO_ROOT" merge-base --is-ancestor "$SOURCE_SHA" FETCH_HEAD \
+      || die "无 leak-patterns.sh 且 ref 不在公开快照链上, 拒绝组包(fail-closed)"
+  fi
+  log "源树安全闸通过: $SOURCE_REF ($SOURCE_SHA)"
+}
+[ -z "$SOURCE_REF" ] || verify_source_ref
+
 # ---- 主流程 ----
 
 mkdir -p "$CACHE_DIR" "$OUT_DIR"
@@ -318,23 +365,39 @@ for platform in $BUILD_LIST; do
   write_notice "$RT/NOTICE.md" "$platform" "$JRE_URL" "$JRE_SHA" "$JRE_FILE"
   rm -rf "$JRE_RAW"
 
+  # ---- 完整包组装(--source-ref): 源码树 + runtime 合装(spec A9) ----
+  if [ -n "$SOURCE_REF" ]; then
+    PKG_TOP="contextos-$BUNDLE_VER"
+    FULL="$STAGING/$PKG_TOP"
+    rm -rf "$FULL"; mkdir -p "$FULL"
+    # A1: 只取闸验过的 commit sha 提交树, 绝不取工作区、也不按名重新解析(TOCTOU 防护同上)
+    git -C "$REPO_ROOT" archive --format=tar "$SOURCE_SHA" | tar -x -C "$FULL"
+    [ -f "$FULL/README.md" ] || die "git archive 结果异常: 缺 README.md"
+    mkdir -p "$FULL/runtime"
+    mv "$RT" "$FULL/runtime/$RUNTIME_NAME"     # A3: runtime/contextos-runtime/ 布局不变
+    PKG_BASE="$PKG_TOP-$platform"
+    PACK_DIR="$PKG_TOP"                        # 打包对象 = 顶层目录
+  else
+    PKG_BASE="$RUNTIME_NAME-$BUNDLE_VER-$platform"
+    PACK_DIR="$RUNTIME_NAME"
+  fi
+
   # 打包: win 用 zip(ditto 保真; linux/CI 无 ditto 时 zip -r 兜底), 其余 tar.gz 保执行位
   # 一律先写 .part 再 mv(原子性, 与下载路径对称: 中断不留半截包被误当成品)
-  PKG_BASE="$RUNTIME_NAME-$BUNDLE_VER-$platform"
   if [ "$platform" = "win-x64" ]; then
     OUT_FILE="$OUT_DIR/$PKG_BASE.zip"
     rm -f "$OUT_FILE" "$OUT_FILE.part"
     if command -v ditto >/dev/null 2>&1; then
       # --norsrc: 不把 mac xattr 编码成 AppleDouble(._*)塞进 zip(上游 tar 0 个, 不加实测混入 523 个垃圾文件)
-      (cd "$STAGING" && ditto -c -k --norsrc --keepParent "$RUNTIME_NAME" "$OUT_FILE.part")
+      (cd "$STAGING" && ditto -c -k --norsrc --keepParent "$PACK_DIR" "$OUT_FILE.part")
     else
       command -v zip >/dev/null 2>&1 || die "win 包需要 ditto 或 zip, 两者都没找到"
-      (cd "$STAGING" && zip -qr "$OUT_FILE.part" "$RUNTIME_NAME")
+      (cd "$STAGING" && zip -qr "$OUT_FILE.part" "$PACK_DIR")
     fi
   else
     OUT_FILE="$OUT_DIR/$PKG_BASE.tar.gz"
     rm -f "$OUT_FILE" "$OUT_FILE.part"
-    (cd "$STAGING" && tar -czf "$OUT_FILE.part" "$RUNTIME_NAME")
+    (cd "$STAGING" && tar -czf "$OUT_FILE.part" "$PACK_DIR")
   fi
   mv "$OUT_FILE.part" "$OUT_FILE"
   log "产出: $OUT_FILE ($(du -h "$OUT_FILE" | cut -f1 | tr -d '[:space:]'))"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""THIRD-PARTY.txt(license-maven-plugin add-third-party 产物)对 allowlist 的 fail-closed 校验。
+"""THIRD-PARTY.txt(license-maven-plugin add-third-party 产物)对 allowlist 的 fail-closed 校验,
+外加 licenses.xml(download-licenses 产物)的 license 全文台账 fail-closed 校验。
 
 被 scripts/check-indexer-licenses.sh 调用; 抽成独立 py 是为了 pytest 可直接测
 (contextos/tests/test_license_allowlist_check.py 三态 fixture)。
@@ -18,7 +19,22 @@
      (The Apache Software License, Version 2.0) Jackson-core (com.fasterxml.jackson.core:jackson-core:2.13.5 - https://github.com/FasterXML/jackson-core)
      (Apache-2.0) (LGPL-2.1-or-later) Java Native Access (net.java.dev.jna:jna:5.18.1 - https://github.com/java-native-access/jna)
 
-用法: python3 check_licenses.py <THIRD-PARTY.txt> <license-allowlist.txt>
+---
+
+第二道闸: licenses.xml 全文台账校验(治"license 全文部分下载失败被静默放行"缺陷,
+2026-07-05 诊断)。download-licenses goal 的 errorRemedy=warn 会在单个 license 全文下载
+失败(如 eclipse.org 路由问题)时只告警不报错, 生成的 licenses.xml 里该依赖的
+<license> 条目就没有 <file> 元素, 而调用方(check-indexer-licenses.sh 旧版)只查
+licenses/ 目录非空就放行 —— 三层叠加, 半成品(缺全文)也能出包。
+
+修法: 对 licenses.xml 逐 dependency 断言"至少一个 license 名落在 allowlist 内的条目
+带 <file> 且该文件在 licenses/ 目录下真实存在"。语义与 THIRD-PARTY.txt 的 any-of/
+双许可校验同构 —— 双许可依赖(如 JNA 的 LGPL 不在 allowlist)只要求 allowlist 内那侧
+(Apache-2.0)有全文, 不强求 LGPL 也有, 零破坏既有语义。
+
+用法:
+  逐行校验:  python3 check_licenses.py <THIRD-PARTY.txt> <license-allowlist.txt>
+  全文台账:  python3 check_licenses.py --texts-manifest <licenses.xml> <license-allowlist.txt>
 退出码: 0 = 全部放行; 1 = 任一红(原因逐条打到 stderr)。
 """
 
@@ -26,6 +42,7 @@ from __future__ import annotations
 
 import re
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -109,9 +126,92 @@ def check_report(report_text: str, allowed: set[str]) -> CheckResult:
     return CheckResult(ok=not problems, dep_count=dep_count, problems=problems)
 
 
+def check_texts_manifest(xml_text: str, allowed: set[str], licenses_dir: Path) -> CheckResult:
+    """licenses.xml(download-licenses 产物)逐 dependency 断言:
+
+    至少一个 license 条目同时满足: 名字在 allowlist 内 且 带 <file> 且该文件
+    在 licenses_dir 下真实存在。双许可依赖(如 JNA)只要 allowlist 内那侧齐全文即可,
+    不强求另一侧(如 LGPL, 本就不在 allowlist)也有 —— 与 THIRD-PARTY.txt 的
+    any-of 语义同构, 零破坏既有采用侧收录方式。
+
+    fail-closed 纪律与 check_report 一致: XML 解析不出 / dependency 无 licenses 子结构
+    一律红, 不静默跳过。
+    """
+    problems: list[str] = []
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        return CheckResult(ok=False, dep_count=0, problems=[f"licenses.xml 解析失败(XML 格式错误): {exc}"])
+
+    dependencies = root.findall("./dependencies/dependency")
+    dep_count = len(dependencies)
+
+    for dep in dependencies:
+        group_id = (dep.findtext("groupId") or "").strip()
+        artifact_id = (dep.findtext("artifactId") or "").strip()
+        version = (dep.findtext("version") or "").strip()
+        coord = f"{group_id}:{artifact_id}:{version}"
+
+        licenses = dep.findall("./licenses/license")
+        if not licenses:
+            problems.append(f"{coord}: 无 <license> 条目(licenses.xml 结构异常, 重新核实)")
+            continue
+
+        found_ok = False
+        names: list[str] = []
+        for lic in licenses:
+            name = (lic.findtext("name") or "").strip()
+            names.append(name or "(空名)")
+            if name not in allowed:
+                continue
+            file_name = (lic.findtext("file") or "").strip()
+            if not file_name:
+                continue
+            if (licenses_dir / file_name).is_file():
+                found_ok = True
+                break
+
+        if not found_ok:
+            problems.append(
+                f"{coord}: 无任一 allowlist 内 license 带真实存在的全文文件, "
+                f"license 名={names}(license 全文下载失败被静默放行? 重跑 download-licenses "
+                "或核实本机到上游站点路由)"
+            )
+
+    if dep_count == 0:
+        problems.append("licenses.xml 里 0 条 dependency(java-indexer 是 shade fat-jar 工程, 不可能 0 依赖)")
+
+    return CheckResult(ok=not problems, dep_count=dep_count, problems=problems)
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) >= 2 and argv[1] == "--texts-manifest":
+        if len(argv) != 4:
+            print(f"用法: {argv[0]} --texts-manifest <licenses.xml> <license-allowlist.txt>", file=sys.stderr)
+            return 2
+        xml_path, allowlist_path = Path(argv[2]), Path(argv[3])
+        for p in (xml_path, allowlist_path):
+            if not p.is_file():
+                print(f"文件不存在: {p}", file=sys.stderr)
+                return 1
+        allowed = parse_allowlist(allowlist_path.read_text(encoding="utf-8"))
+        if not allowed:
+            print(f"allowlist 为空(全注释?): {allowlist_path}", file=sys.stderr)
+            return 1
+        licenses_dir = xml_path.parent / "licenses"
+        result = check_texts_manifest(xml_path.read_text(encoding="utf-8"), allowed, licenses_dir)
+        if not result.ok:
+            print("license 全文台账校验 FAIL(fail-closed):", file=sys.stderr)
+            for prob in result.problems:
+                print(f"  - {prob}", file=sys.stderr)
+            return 1
+        print(f"license 全文台账 OK ({result.dep_count} 条依赖)")
+        return 0
+
     if len(argv) != 3:
         print(f"用法: {argv[0]} <THIRD-PARTY.txt> <license-allowlist.txt>", file=sys.stderr)
+        print(f"      {argv[0]} --texts-manifest <licenses.xml> <license-allowlist.txt>", file=sys.stderr)
         return 2
     report_path, allowlist_path = Path(argv[1]), Path(argv[2])
     for p in (report_path, allowlist_path):

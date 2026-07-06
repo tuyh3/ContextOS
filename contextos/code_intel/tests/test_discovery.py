@@ -17,7 +17,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from contextos.code_intel.jdtls_provider.discovery import discover_vscode_jdtls
+from contextos.code_intel.jdtls_provider.discovery import (
+    discover_vscode_jdtls,
+    resolve_effective_runtime,
+)
 
 
 def _make_ext(home: Path, name: str, *, with_server: bool = True,
@@ -231,3 +234,134 @@ def test_current_platform_config_maps_to_ssot_value():
         JDTLS_CONFIG_DIR_BY_PLATFORM,
     )
     assert _current_platform_config() in set(JDTLS_CONFIG_DIR_BY_PLATFORM.values())
+
+
+# --------------------------------------------------------------------- resolve_effective_runtime(spec A4/A5/A11)
+
+
+JAVA_NAME = "java.exe" if sys.platform == "win32" else "java"
+
+
+def _mk_valid_jdtls(root: Path, cfg: str = "config_test") -> Path:
+    """深校验可过的最小 jdtls 树: launcher jar + 平台 config 目录。"""
+    d = root / "jdtls"
+    (d / "plugins").mkdir(parents=True)
+    (d / "plugins" / "org.eclipse.equinox.launcher_1.6.jar").write_bytes(b"x")
+    (d / cfg).mkdir()
+    return d
+
+
+def _mk_bundle(repo: Path, cfg: str = "config_test") -> None:
+    rt = repo / "runtime" / "contextos-runtime"
+    _mk_valid_jdtls(rt, cfg)
+    (rt / "jre" / "bin").mkdir(parents=True)
+    (rt / "jre" / "bin" / JAVA_NAME).write_bytes(b"x")
+    (rt / "lombok.jar").write_bytes(b"x")
+    (rt / "java-indexer.jar").write_bytes(b"x")
+
+
+class _Rt:
+    def __init__(self, jdtls, lombok, jh):
+        self.jdtls_path, self.lombok_path, self.java_home = jdtls, lombok, jh
+
+
+class _Ci:
+    def __init__(self, jar):
+        self.indexer_jar = jar
+
+
+class _Profile:
+    def __init__(self, rt, ci):
+        self.jdtls_runtime, self.code_index = rt, ci
+
+
+def _valid_profile(tmp_path: Path) -> _Profile:
+    d = tmp_path / "own"
+    jdtls = _mk_valid_jdtls(d)
+    (d / "jre" / "bin").mkdir(parents=True)
+    (d / "jre" / "bin" / JAVA_NAME).write_bytes(b"x")
+    (d / "lombok.jar").write_bytes(b"x")
+    (d / "my-indexer.jar").write_bytes(b"x")
+    return _Profile(
+        _Rt(str(jdtls), str(d / "lombok.jar"), str(d / "jre")),
+        _Ci(str(d / "my-indexer.jar")),
+    )
+
+
+def _placeholder_profile() -> _Profile:
+    return _Profile(_Rt("/nonexistent/jdtls", "/nonexistent/lombok.jar",
+                        "/nonexistent/jre"), _Ci("/nonexistent/idx.jar"))
+
+
+def test_resolver_profile_valid_wins(tmp_path):
+    p = _valid_profile(tmp_path)
+    _mk_bundle(tmp_path)          # bundle 在场也不该被用
+    r = resolve_effective_runtime(p, root=tmp_path, platform_config="config_test")
+    assert r.trio_source == "profile" and r.indexer_source == "profile"
+    assert r.jdtls_path == Path(p.jdtls_runtime.jdtls_path).as_posix()
+
+
+def test_resolver_placeholder_falls_back_to_bundle(tmp_path):
+    _mk_bundle(tmp_path)
+    r = resolve_effective_runtime(_placeholder_profile(), root=tmp_path,
+                                  platform_config="config_test")
+    assert r.trio_source == "runtime-bundle" and r.indexer_source == "runtime-bundle"
+    assert r.java_home == (tmp_path / "runtime" / "contextos-runtime" / "jre").as_posix()
+
+
+def test_resolver_neither_passthrough_unverified(tmp_path):
+    r = resolve_effective_runtime(_placeholder_profile(), root=tmp_path,
+                                  platform_config="config_test")
+    assert r.trio_source == "profile-unverified"
+    assert r.jdtls_path == "/nonexistent/jdtls"   # 原值透传, 下游报错口径不变
+    # indexer unverified 与 trio 同款真透传(C1 修复): 双平台安全, 不经 Path() 重整形
+    assert r.indexer_source == "profile-unverified"
+    assert r.indexer_jar == "/nonexistent/idx.jar"
+
+
+def test_resolver_trio_is_all_or_nothing(tmp_path):
+    p = _valid_profile(tmp_path)
+    p.jdtls_runtime.java_home = "/nonexistent/jre"   # 三缺一
+    _mk_bundle(tmp_path)
+    r = resolve_effective_runtime(p, root=tmp_path, platform_config="config_test")
+    assert r.trio_source == "runtime-bundle"          # A5: 整组回退, 禁混搭
+    assert r.jdtls_path.endswith("runtime/contextos-runtime/jdtls")
+
+
+def test_resolver_indexer_independent(tmp_path):
+    p = _valid_profile(tmp_path)
+    p.code_index.indexer_jar = "/nonexistent/idx.jar"
+    _mk_bundle(tmp_path)
+    r = resolve_effective_runtime(p, root=tmp_path, platform_config="config_test")
+    assert r.trio_source == "profile" and r.indexer_source == "runtime-bundle"
+
+
+def test_resolver_deep_validation_rejects_half_copy(tmp_path):
+    p = _valid_profile(tmp_path)
+    # 深校验雷点: 目录在但 launcher jar 没了(半截拷贝)
+    for f in (Path(p.jdtls_runtime.jdtls_path) / "plugins").iterdir():
+        f.unlink()
+    _mk_bundle(tmp_path)
+    r = resolve_effective_runtime(p, root=tmp_path, platform_config="config_test")
+    assert r.trio_source == "runtime-bundle"          # A4: 浅 exists 不作数
+
+
+def test_resolver_relative_indexer_anchored_at_root(tmp_path):
+    p = _valid_profile(tmp_path)
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "rel.jar").write_bytes(b"x")
+    p.code_index.indexer_jar = "vendor/rel.jar"
+    r = resolve_effective_runtime(p, root=tmp_path, platform_config="config_test")
+    assert r.indexer_source == "profile"
+    assert r.indexer_jar == (tmp_path / "vendor" / "rel.jar").as_posix()
+
+
+def test_from_profile_uses_resolver_fallback(tmp_path, monkeypatch):
+    from contextos.code_intel.jdtls_provider.config import JdtlsRuntimeConfig
+    _mk_bundle(tmp_path)
+    monkeypatch.chdir(tmp_path)          # from_profile 锚 cwd(现行契约)
+    monkeypatch.setattr(
+        "contextos.code_intel.jdtls_provider.discovery._current_platform_config",
+        lambda: "config_test")
+    rt = JdtlsRuntimeConfig.from_profile(_placeholder_profile())
+    assert Path(rt.java_home) == tmp_path / "runtime" / "contextos-runtime" / "jre"

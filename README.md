@@ -94,17 +94,40 @@ CI 在 **Linux / macOS / Windows** 三平台跑全量单测(`.github/workflows/c
 
 ## 🚀 快速开始
 
-环境用 [uv](https://github.com/astral-sh/uv)(day-1 锁死,不走 pip/venv)。
+拿代码分两条路线,任选一条,后面步骤完全一样:
+
+- **完整包路线(推荐新用户)**:Release 页下载对应你操作系统的完整包
+  (`contextos-<版本>-<平台>` 压缩包,平台见下表),解压出 `contextos-<版本>/` 目录,
+  进去即可——代码 + Java 运行时(JDT LS / JRE 21 / lombok / 代码索引器)已经在里面,
+  不用另外装 Java 环境。
+
+  | 附件 | 适用系统 |
+  |---|---|
+  | `contextos-<版本>-win-x64.zip` | Windows(x64) |
+  | `contextos-<版本>-mac-arm64.tar.gz` | macOS(Apple 芯片,M 系列) |
+  | `contextos-<版本>-mac-x64.tar.gz` | macOS(Intel 芯片) |
+  | `contextos-<版本>-linux-x64.tar.gz` | Linux(x64) |
+
+  Windows 用户注意:这条路线**不需要装 Git**,浏览器下 zip、解压即可。解压位置挑一个
+  路径短、全英文数字的目录(比如 `C:\contextos\`),避免中文/过深目录导致 Windows
+  路径长度限制报错。
+
+- **clone 路线(开发者)**:`git clone` 本仓库。这条路线不含 Java 运行时,需要自己配
+  (见下面"JDT LS 运行时从哪来"——可以自己装、复用 VSCode 扩展、或直接从完整包里
+  取 `runtime/` 子目录搬过来用)。
+
+环境用 [uv](https://github.com/astral-sh/uv)(day-1 锁死,不走 pip/venv);未装的先照
+[官方指南](https://docs.astral.sh/uv/getting-started/installation/) 一条命令安装。
 
 ```bash
-# 1. 装依赖
+# 1. 装依赖(在拿到的目录里执行,完整包/clone 都一样)
 uv sync
 
 # 2. 配主配置 profile(代码仓路径 / LLM / DB 实例 / 语料目录)
 cp config/profile.example.toml config/profile.toml            # Windows 用 profile.example.windows.toml
 #   然后编辑 config/profile.toml,把路径填成你自己的项目
-#   其中 [jdtls_runtime] 三个路径不用手填 —— 先跑 `uv run contextos health`,
-#   它会自动探测并打印现成路径给你抄(详见下面"JDT LS 运行时从哪来")
+#   [jdtls_runtime] 保持范本原样即可 —— 完整包路线会自动用包内运行时;
+#   clone 路线自动探测不到时,再照"JDT LS 运行时从哪来"一节手填
 
 # 3. 配凭据 .env:LLM API key(+ 连 DB 才要的 Oracle 账号)
 cp .env.example .env
@@ -116,9 +139,13 @@ uv run contextos init
 #   只 build 单维:  uv run contextos init --only code   # code|database|config|corpus
 #   不连数据库:     uv run contextos init --skip-oracle
 
-# 体检各子系统是否就绪
+# 体检各子系统是否就绪,也能看当前 Java 运行时生效来源
 uv run contextos health
 ```
+
+**升级到新版本**:下新版完整包解压,是一个新的 `contextos-<新版本>/` 目录,和旧版本目录
+互不覆盖——旧目录里的 `config/profile.toml`、`database/` 都还在,新目录需要重新配置
+(或把旧 `config/profile.toml` 拷过去复用)。
 
 ### 配置文件清单
 
@@ -160,11 +187,16 @@ java_home   = "..."   # 跑 JDT LS 的 JRE/JDK 根目录(21+)
 注意:这个 `java_home` 是"跑语言服务器"的新版 Java,跟 `[[projects]]` 里编译你业务项目的
 `gradle_java_home`(老项目常见 JDK 8)是两回事,别填成同一个。
 
-**路线零(最省事):下载 runtime bundle。** Release 页下载对应平台的
-`contextos-runtime-<版本>-<平台>` 压缩包,解压到仓根 `runtime/` 目录(解压后会看到
-`runtime/contextos-runtime/`,这是正常的),然后跑
-`uv run contextos health` —— 探到后会给出可直接照抄的四行配置(含 `code_index.indexer_jar`,
-连代码索引器 jar 都不用自己构建)。内网环境把包拷进去解压即可,全程不联网。
+**路线零(默认省心,新用户走这条):Release 页下载的完整包自带运行时,零配置。**
+如果你是照本文档「快速开始」下的完整包(`contextos-<版本>-<平台>` 压缩包)装的,
+包内已经带了 JDT LS / lombok / JRE 21(在解压出的 `contextos-<版本>/runtime/contextos-runtime/`
+下),**这三条路径完全不用手填**——profile 里 `[jdtls_runtime]` 保持范本原样即可,程序会
+自动探测并使用包内这一套。跑 `uv run contextos health` 能看到 `jdtls_runtime.source` 是
+`"runtime-bundle (fallback)"`,说明当前就在用包内运行时,一切正常。
+
+只有你想**钉死路径**(比如不想依赖自动探测、或要跨包复用同一份运行时)才需要手填,
+往下看「路线一/二」,把 `health` 给出的 `suggestion` 照抄进 profile 即可。开发者走
+`git clone` 路线(不含运行时)时,同样先跑一遍 `health` 看自动探测能不能兜住。
 
 **路线一:复用 VSCode 的 Java 扩展。** 如果装过 VSCode 并且装了
 [Extension Pack for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack)
@@ -215,6 +247,12 @@ uv run contextos health 2>/dev/null | jq '.health.jdtls_runtime.suggestion'
 (整个系统里唯一会联网下模型的是可选的 bge 重排/embedding 权重,默认 fake 后端不触发)。
 Windows 上路径写进 TOML 一律用正斜杠(`C:/...`),原因见 `config/profile.example.windows.toml`
 头部的转义纪律。
+
+**路线三:已经 clone 了代码,想要一份现成运行时。** 去 Release 页下载对应你系统的完整包
+(本节「快速开始」的平台表),解压后把里面的 `runtime/contextos-runtime/` 子目录整个搬到你 clone 出来
+的仓库里(同样放成 `runtime/contextos-runtime/`),再照路线零的说法,profile 保持范本原样
+就会自动探测到。不想拷整个仓也没关系,完整包本来就带一份完整的源码树,直接当独立副本用
+也行。
 
 跑完就能用了。两种用法:
 

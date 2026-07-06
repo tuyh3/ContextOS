@@ -50,24 +50,23 @@ class JdtlsRuntimeConfig:
 
     @classmethod
     def from_profile(cls, profile: object) -> "JdtlsRuntimeConfig":
-        """Construct JdtlsRuntimeConfig from a loaded Profile.
-
-        Path fields are expanduser()-ed at construction time so downstream
-        consumers (eclipse_jdtls.py / adapter.py) see real absolute paths,
-        not literal '~' strings — eclipse_jdtls.py:559 wraps the value in
-        Path() without expanding.
-        """
+        """从 Profile 构造生效 jdtls 三路径 —— 经 resolver(spec A11): profile
+        深校验有效用原配置, 否则回退包内 bundle。unverified 时 resolver 透传
+        原串, 本处统一 expanduser(值形态分工见 EffectiveRuntime docstring)。
+        duck-typing: 有 jdtls_runtime/code_index 属性即可(测试桩可注入)。"""
         from pathlib import Path
 
-        from contextos.profile.schema import Profile
+        from contextos.code_intel.jdtls_provider.discovery import (
+            resolve_effective_runtime,
+        )
 
-        if not isinstance(profile, Profile):
-            raise TypeError(f"expected Profile, got {type(profile).__name__}")
-        r = profile.jdtls_runtime
+        if not hasattr(profile, "jdtls_runtime") or not hasattr(profile, "code_index"):
+            raise TypeError(f"expected profile-like object, got {type(profile).__name__}")
+        rt = resolve_effective_runtime(profile, root=Path.cwd())
         return cls(
-            jdtls_path=str(Path(r.jdtls_path).expanduser()),
-            lombok_path=str(Path(r.lombok_path).expanduser()),
-            java_home=str(Path(r.java_home).expanduser()),
+            jdtls_path=str(Path(rt.jdtls_path).expanduser()),
+            lombok_path=str(Path(rt.lombok_path).expanduser()),
+            java_home=str(Path(rt.java_home).expanduser()),
         )
 
 

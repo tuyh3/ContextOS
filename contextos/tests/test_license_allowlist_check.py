@@ -15,12 +15,26 @@
 
 脚本逻辑: importlib 从 scripts/runtime-bundle/ 按文件路径加载(该目录不是包);
 真仓 allowlist 另测一条覆盖校准词形, 防 allowlist 被误删导致真报告转红。
+
+---
+
+第二组: check_texts_manifest(licenses.xml 全文台账闸, 2026-07-05 治"license 全文部分
+下载失败被静默放行"缺陷新增)。三态 fixture 同款纪律:
+- 好台账(每 dependency 的 allowlist 内 license 都带真实存在的 <file>) -> 绿。
+- EPL 全缺 <file>(本次真实缺陷态复现, 见 vendor/java-indexer 生成的坏 licenses.xml)
+  -> 红, problems 定位到具体缺失的依赖坐标。
+- 双许可(Apache 有 file + LGPL 无 file 且 LGPL 不在 allowlist) -> 绿(any-of 语义
+  与 THIRD-PARTY.txt 校验同构, 采用侧收录即可, 不强求另一侧也有全文)。
+用 tmp_path 落合成 licenses.xml + licenses/ 目录(<file> 只是 basename, 真实性靠
+"文件在 licenses_dir 下存在"断言, 必须真落盘才测得出"缺文件"这一态)。
 """
 from __future__ import annotations
 
 import importlib.util
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECKER_PATH = REPO_ROOT / "scripts" / "runtime-bundle" / "check_licenses.py"
@@ -119,3 +133,202 @@ def test_real_allowlist_covers_calibrated_forms() -> None:
         assert form in allowed, f"allowlist 缺实测词形: {form}"
     # LGPL-2.1-or-later 刻意不在单(JNA 走 any-of Apache-2.0), 防有人顺手加上
     assert "LGPL-2.1-or-later" not in allowed
+
+
+# ---------------------------------------------------------------------------
+# check_texts_manifest(licenses.xml 全文台账闸)三态 fixture
+# ---------------------------------------------------------------------------
+
+TEXTS_ALLOW = {"The Apache Software License, Version 2.0", "Apache-2.0", "Eclipse Public License - v 2.0", "EPL-2.0"}
+
+APACHE_LICENSE_FILE = "the apache software license, version 2.0 - license-2.0.txt"
+EPL_LICENSE_FILE = "eclipse public license - v 2.0 - epl-2.0.html"
+
+
+def _dep_xml(group_id: str, artifact_id: str, version: str, licenses_xml: str) -> str:
+    return f"""
+    <dependency>
+      <groupId>{group_id}</groupId>
+      <artifactId>{artifact_id}</artifactId>
+      <version>{version}</version>
+      <licenses>
+        {licenses_xml}
+      </licenses>
+    </dependency>"""
+
+
+def _wrap(deps_xml: str) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<licenseSummary>
+  <dependencies>
+{deps_xml}
+  </dependencies>
+</licenseSummary>
+"""
+
+
+def test_texts_manifest_good_ledger_passes(tmp_path: Path) -> None:
+    """态①: 每 dependency 的 allowlist 内 license 都带真实存在的 <file> -> 绿。"""
+    licenses_dir = tmp_path / "licenses"
+    licenses_dir.mkdir()
+    (licenses_dir / APACHE_LICENSE_FILE).write_text("Apache License text", encoding="utf-8")
+    (licenses_dir / EPL_LICENSE_FILE).write_text("<html>EPL text</html>", encoding="utf-8")
+
+    xml_text = _wrap(
+        _dep_xml(
+            "com.fasterxml.jackson.core",
+            "jackson-core",
+            "2.13.5",
+            f"""<license>
+          <name>The Apache Software License, Version 2.0</name>
+          <file>{APACHE_LICENSE_FILE}</file>
+        </license>""",
+        )
+        + _dep_xml(
+            "org.eclipse.platform",
+            "org.eclipse.core.runtime",
+            "3.17.0",
+            f"""<license>
+          <name>Eclipse Public License - v 2.0</name>
+          <file>{EPL_LICENSE_FILE}</file>
+        </license>""",
+        )
+    )
+
+    result = check_licenses.check_texts_manifest(xml_text, TEXTS_ALLOW, licenses_dir)
+    assert result.ok, result.problems
+    assert result.dep_count == 2
+    assert result.problems == []
+
+
+def test_texts_manifest_missing_epl_files_fails(tmp_path: Path) -> None:
+    """态②(本次真实缺陷态复现): EPL 依赖全缺 <file> -> 红, 定位到具体依赖坐标。"""
+    licenses_dir = tmp_path / "licenses"
+    licenses_dir.mkdir()
+    (licenses_dir / APACHE_LICENSE_FILE).write_text("Apache License text", encoding="utf-8")
+    # 故意不落盘 EPL 全文, 且 XML 里 EPL license 条目本身就没有 <file> 元素
+    # (复现 download-licenses errorRemedy=warn 吞错后的真实产物形态)
+
+    xml_text = _wrap(
+        _dep_xml(
+            "com.fasterxml.jackson.core",
+            "jackson-core",
+            "2.13.5",
+            f"""<license>
+          <name>The Apache Software License, Version 2.0</name>
+          <file>{APACHE_LICENSE_FILE}</file>
+        </license>""",
+        )
+        + _dep_xml(
+            "org.eclipse.platform",
+            "org.eclipse.core.runtime",
+            "3.17.0",
+            """<license>
+          <name>Eclipse Public License - v 2.0</name>
+        </license>""",
+        )
+        + _dep_xml(
+            "org.eclipse.platform",
+            "org.eclipse.osgi",
+            "3.24.200",
+            """<license>
+          <name>EPL-2.0</name>
+        </license>""",
+        )
+    )
+
+    result = check_licenses.check_texts_manifest(xml_text, TEXTS_ALLOW, licenses_dir)
+    assert not result.ok
+    assert result.dep_count == 3
+    problem_text = "\n".join(result.problems)
+    assert "org.eclipse.platform:org.eclipse.core.runtime:3.17.0" in problem_text
+    assert "org.eclipse.platform:org.eclipse.osgi:3.24.200" in problem_text
+    # 好的 jackson-core 那条不该被牵连报红
+    assert "jackson-core" not in problem_text
+
+
+def test_texts_manifest_dual_license_any_of_passes(tmp_path: Path) -> None:
+    """态③: 双许可(Apache 有 file + LGPL 无 file 且 LGPL 不在 allowlist)-> 绿,
+    any-of 语义与 THIRD-PARTY.txt 校验同构, 采用侧(Apache)收录即可。"""
+    licenses_dir = tmp_path / "licenses"
+    licenses_dir.mkdir()
+    (licenses_dir / APACHE_LICENSE_FILE).write_text("Apache License text", encoding="utf-8")
+
+    xml_text = _wrap(
+        _dep_xml(
+            "net.java.dev.jna",
+            "jna",
+            "5.18.1",
+            f"""<license>
+          <name>LGPL-2.1-or-later</name>
+        </license>
+        <license>
+          <name>The Apache Software License, Version 2.0</name>
+          <file>{APACHE_LICENSE_FILE}</file>
+        </license>""",
+        )
+    )
+
+    result = check_licenses.check_texts_manifest(xml_text, TEXTS_ALLOW, licenses_dir)
+    assert result.ok, result.problems
+    assert result.dep_count == 1
+    assert result.problems == []
+
+
+def test_texts_manifest_file_element_present_but_not_on_disk_fails(tmp_path: Path) -> None:
+    """<file> 元素声明了但磁盘上真实不存在(部分下载失败但 XML 仍写了文件名的边缘情形)-> 红。"""
+    licenses_dir = tmp_path / "licenses"
+    licenses_dir.mkdir()
+    # 故意不落盘对应文件
+
+    xml_text = _wrap(
+        _dep_xml(
+            "org.eclipse.platform",
+            "org.eclipse.osgi",
+            "3.24.200",
+            f"""<license>
+          <name>EPL-2.0</name>
+          <file>{EPL_LICENSE_FILE}</file>
+        </license>""",
+        )
+    )
+
+    result = check_licenses.check_texts_manifest(xml_text, TEXTS_ALLOW, licenses_dir)
+    assert not result.ok
+    assert any("org.eclipse.platform:org.eclipse.osgi:3.24.200" in p for p in result.problems)
+
+
+def test_texts_manifest_zero_dependencies_fails(tmp_path: Path) -> None:
+    licenses_dir = tmp_path / "licenses"
+    licenses_dir.mkdir()
+    xml_text = _wrap("")
+    result = check_licenses.check_texts_manifest(xml_text, TEXTS_ALLOW, licenses_dir)
+    assert not result.ok
+    assert any("0 条 dependency" in p for p in result.problems)
+
+
+def test_texts_manifest_malformed_xml_fails(tmp_path: Path) -> None:
+    licenses_dir = tmp_path / "licenses"
+    licenses_dir.mkdir()
+    result = check_licenses.check_texts_manifest("<not><valid xml", TEXTS_ALLOW, licenses_dir)
+    assert not result.ok
+    assert any("解析失败" in p for p in result.problems)
+
+
+def test_texts_manifest_real_bad_fixture_reproduces_defect() -> None:
+    """本次真实缺陷态复现: 本 worktree 的坏 licenses.xml(14 个 EPL 依赖全缺 <file>)
+    对新闸跑必须红。用真实仓内文件而非合成 fixture, 确保闸真的能抓到本次 release-blocking gap。
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bad_xml = repo_root / "vendor" / "java-indexer" / "target" / "generated-resources" / "licenses.xml"
+    if not bad_xml.is_file():
+        pytest.skip("本机未跑过 download-licenses, 没有 licenses.xml 产物可复现")
+    allowed = check_licenses.parse_allowlist(REAL_ALLOWLIST.read_text(encoding="utf-8"))
+    licenses_dir = bad_xml.parent / "licenses"
+    result = check_licenses.check_texts_manifest(bad_xml.read_text(encoding="utf-8"), allowed, licenses_dir)
+    # 这份是本次诊断出的坏产物(14 EPL 依赖 0 file), 断言必须能抓到 —— 若这条测试意外变绿,
+    # 说明本机产物已被重新生成成好台账, 不代表闸失效(见 check_texts_manifest 合成态测试)。
+    if result.ok:
+        pytest.skip("本机 licenses.xml 已是好台账(重新跑过 download-licenses?), 缺陷态无法复现")
+    problem_text = "\n".join(result.problems)
+    assert "org.eclipse" in problem_text

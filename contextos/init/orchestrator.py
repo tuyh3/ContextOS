@@ -68,8 +68,8 @@ def _step_code(profile: Any, engine: Any) -> StepResult:
         Path(profile.storage.data_dir).expanduser() / "jdtls-workspaces")
     storage = StorageConfig(data_dir=str(Path(profile.storage.data_dir).expanduser()),
                             jdtls_workspace_dir=str(Path(ws).expanduser()))
-    adapter = JdtlsAdapter(project=project, storage=storage,
-                           runtime=JdtlsRuntimeConfig.from_profile(profile))
+    rt = JdtlsRuntimeConfig.from_profile(profile)
+    adapter = JdtlsAdapter(project=project, storage=storage, runtime=rt)
     # MED-3: start() 放 try 内, finally 保证 stop() 必被调用 —— start() spawn java 子进程后抛
     # (JDT 能力 assert / ServiceReady 超时等)时也杀进程, 防孤儿 JDT 进程泄漏整个 init 生命周期。
     # 不用 `with JdtlsAdapter(...)`: __enter__ 调 start(), start() 在 __enter__ 内抛时 Python
@@ -106,7 +106,7 @@ def _step_code(profile: Any, engine: Any) -> StepResult:
                     detail="projection build skipped: another rebuild is running "
                            "(projection.lock held)")
             res = build_projection(
-                engine=engine, repo_root=repo, java_home=profile.jdtls_runtime.java_home,
+                engine=engine, repo_root=repo, java_home=rt.java_home,
                 jar=jar, xmx=ci.indexer_xmx, build_ctx=build_context_dict(profile),
                 out_dir=data_dir / "code-index-out", indexed_commit=head_commit_real(repo),
                 sampler=sampler, sample_max_mismatch=ci.sample_check_max_mismatch)

@@ -7,11 +7,16 @@
 #      排除 test/provided scope)生成 target/generated-sources/license/THIRD-PARTY.txt
 #   2. 用 scripts/runtime-bundle/check_licenses.py 对 scripts/runtime-bundle/license-allowlist.txt
 #      逐行核对: 任一依赖 license Unknown/缺失/不在单/行解析不出/0 记录 -> exit 1(fail-closed)
+#   3. --download-texts 时额外跑 download-licenses goal 落 license 全文, 再用
+#      check_licenses.py --texts-manifest 对 licenses.xml 逐 dependency 断言"至少一个
+#      allowlist 内 license 带真实存在的全文文件"(2026-07-05 新增, 治 download-licenses
+#      errorRemedy=warn 吞单个下载失败 + 旧版只查目录非空, 半成品静默出包的缺陷)
 #
 # 用法:
 #   ./scripts/check-indexer-licenses.sh [--download-texts] [--skip-generate]
 #     --download-texts  额外跑 download-licenses goal, license 全文落
-#                       vendor/java-indexer/target/generated-resources/licenses/(打包接线用)
+#                       vendor/java-indexer/target/generated-resources/licenses/(打包接线用);
+#                       随后跑 licenses.xml 全文台账校验, 任一依赖缺全文 -> exit 1
 #     --skip-generate   跳过 mvn, 直接校验已有 THIRD-PARTY.txt(离线调试用)
 #
 # 环境变量:
@@ -29,6 +34,7 @@ INDEXER_DIR="$REPO_ROOT/vendor/java-indexer"
 ALLOWLIST="$REPO_ROOT/scripts/runtime-bundle/license-allowlist.txt"
 CHECKER="$REPO_ROOT/scripts/runtime-bundle/check_licenses.py"
 REPORT="$INDEXER_DIR/target/generated-sources/license/THIRD-PARTY.txt"
+LICENSES_XML="$INDEXER_DIR/target/generated-resources/licenses.xml"
 LICENSE_PLUGIN="org.codehaus.mojo:license-maven-plugin:2.4.0"
 
 log() { echo "[check-indexer-licenses] $*" >&2; }
@@ -70,10 +76,17 @@ if [ "$SKIP_GENERATE" -eq 0 ]; then
     || die "add-third-party 失败。确认网络可达 Maven Central(内网 mirror 环境见头部 MVN_SETTINGS 说明)与 JDK 可用"
   if [ "$DOWNLOAD_TEXTS" -eq 1 ]; then
     log "下载 license 全文: $LICENSE_PLUGIN:download-licenses ..."
+    # 刻意不带 -q: download-licenses 的 errorRemedy=warn 会在单个 license 全文下载失败时
+    # 只告警不报错(退出码仍是 0), -q 会把这条告警一起吞掉, 三层放行链的第二层就是它
+    # (第一层 errorRemedy=warn, 第三层是旧版只查目录非空)。告警必须可见, 人工过目才发现得了。
     # shellcheck disable=SC2086
-    (cd "$INDEXER_DIR" && mvn -q $MVN_EXTRA "$LICENSE_PLUGIN:download-licenses" \
+    (cd "$INDEXER_DIR" && mvn $MVN_EXTRA "$LICENSE_PLUGIN:download-licenses" \
         -Dlicense.excludedScopes=test,provided) \
       || die "download-licenses 失败(打包需要 license 全文, fail-closed 不放行)"
+    [ -f "$LICENSES_XML" ] || die "licenses.xml 不存在: $LICENSES_XML(download-licenses 没产出?)"
+    log "校验 license 全文台账: $LICENSES_XML"
+    python3 "$CHECKER" --texts-manifest "$LICENSES_XML" "$ALLOWLIST" \
+      || die "license 全文台账校验 FAIL —— 部分依赖缺全文(常见于本机到 eclipse.org 等上游站点路由问题; 本机遇红多为路由问题, 正解是走 CI 出包, 不是本机硬重试)"
   fi
 fi
 

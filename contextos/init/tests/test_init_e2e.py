@@ -362,9 +362,19 @@ def test_step_code_ok_when_symbols_indexed(monkeypatch, tmp_path):
 def test_step_code_jar_missing_degrades_with_rebuild_pointer(monkeypatch, tmp_path):
     """jar 缺失 -> build_projection 内 IndexerError(消息含 vendor/java-indexer README 重建
     指引)-> degraded + detail 透传, **不崩 init**; JDT sanity 信息仍保留在 counts。
-    build_projection 真跑(不 stub): 验证失败被兜成 degraded 而非异常逃逸。"""
+    build_projection 真跑(不 stub): 验证失败被兜成 degraded 而非异常逃逸。
+
+    钉死 discover_runtime_bundle 返回 None: 本测设的 indexer_jar 是不存在路径,
+    意图触发 resolve_effective_runtime 的"配置值不存在"回退报错支路; 但若 cwd
+    恰好带 <cwd>/runtime/contextos-runtime(本仓根即是), resolver 会先探到真
+    bundle 把 jar 悄悄接上, build_projection 真跑路径变成占位 java_home spawn
+    失败, 断言的 "java-indexer" 字样不再出现在 detail 里(reviewer 从主仓根实证
+    1 failed)。同前例(test_adapter.py/test_paths.py)钉死使其与 cwd 状态解耦。"""
     from contextos.profile.schema import CodeIndexConfig
     from contextos.storage.db import engine_from_profile
+    import contextos.code_intel.jdtls_provider.discovery as D
+    monkeypatch.setattr(D, "discover_runtime_bundle",
+                        lambda repo=None, platform_config=None: None)
     _patch_fake_jdt(monkeypatch, [{"name": "FooService"}])
     prof = _profile(tmp_path).model_copy(update={
         "code_index": CodeIndexConfig(indexer_jar=str(tmp_path / "absent" / "indexer.jar"))})
@@ -376,11 +386,28 @@ def test_step_code_jar_missing_degrades_with_rebuild_pointer(monkeypatch, tmp_pa
 
 def test_step_code_build_ok_passes_counts_and_sampler(monkeypatch, tmp_path):
     """build 成功路径: res counts 透传进 StepResult.counts; sanity ok 且 sample_check_* > 0
-    -> sampler 闭包注入(staging 事务内对照, 复用同一 JDT adapter)+ 阈值来自 profile。"""
+    -> sampler 闭包注入(staging 事务内对照, 复用同一 JDT adapter)+ 阈值来自 profile。
+
+    附带守卫(spec A11 review P1 家族): _step_code 的 java_home 必须来自
+    JdtlsRuntimeConfig.from_profile(经 resolver), 不许绕过悄悄退回直读
+    profile.jdtls_runtime.java_home。patch 打在类上(orchestrator 按名 import
+    的是类本身, 类上 patch 对 import 绑定免疫), 返回值域内 sentinel java_home,
+    断言 build_projection 收到的 kwargs 与 sentinel 一致 —— 不用裸路径字符串
+    (cwd 敏感陷阱), 用专属不可能来自真实环境的 sentinel 值。"""
+    from contextos.code_intel.jdtls_provider.config import (
+        JdtlsRuntimeConfig as _RtConfig,
+    )
     from contextos.storage.db import engine_from_profile
     _patch_fake_jdt(monkeypatch, [{"name": "FooService"}])
     seen: dict = {}
     _patch_fake_build(monkeypatch, seen=seen, counts={"code_classes": 7, "code_methods": 21})
+    sentinel_java_home = "/sentinel/from-resolver/jre"
+    monkeypatch.setattr(
+        _RtConfig, "from_profile",
+        classmethod(lambda cls, p: _RtConfig(
+            jdtls_path="/sentinel/from-resolver/jdtls",
+            lombok_path="/sentinel/from-resolver/lombok.jar",
+            java_home=sentinel_java_home)))
     prof = _profile(tmp_path)
     engine = engine_from_profile(prof)
     res = orchestrator._step_code(prof, engine)
@@ -390,6 +417,7 @@ def test_step_code_build_ok_passes_counts_and_sampler(monkeypatch, tmp_path):
     assert seen["engine"] is engine
     assert seen["sampler"] is not None                 # 默认 sample_check 50+100 > 0
     assert seen["sample_max_mismatch"] == prof.code_index.sample_check_max_mismatch
+    assert seen["java_home"] == sentinel_java_home     # 经 resolver, 非直读 profile 原值
 
 
 def test_step_code_skips_build_when_projection_lock_held(monkeypatch, tmp_path):
