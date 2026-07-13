@@ -68,6 +68,10 @@ signal_terms_path  = ""      # 如指向文件, Windows 上也写正斜杠: "C:/
 stop_keywords_path = ""
 
 [jdtls_runtime]
+# 【完整包用户不用改本段】下面三行只是占位示例: 路径在你机器上不存在时, 程序自动
+# 使用包内自带运行时(runtime/contextos-runtime/), `uv run contextos health` 的
+# jdtls_runtime 段显示 source = "runtime-bundle (fallback)" 即已生效。
+# 只有想自定义运行时(如复用 VSCode 扩展)才需要把三行改成真实路径:
 # 复用 VSCode redhat.java 扩展。Windows x64 的扩展目录平台后缀是 win32-x64(ARM 机是 win32-arm64),
 # 版本号以你机器上 %USERPROFILE%/.vscode/extensions/ 下的实际目录名为准。
 # java_home 注意 jre 下还有一层"JDK版本-平台"目录(vendored eclipse_jdtls 同款判法), 要指到那一层;
@@ -127,8 +131,11 @@ monthly_pattern = "_\\d{6}$"           # 月表 _YYYYMM 视为独立 entity
 # typo_map = {CSPF2 = "CSFP2"}         # 数据质量错映射(默认空)
 
 [code_index]
-# 04b code_* 投影。jar 缺失时 contextos init 给重建指引(vendor/java-indexer/README.md)
+# 04b code_* 投影。完整包用户不用改: 下方缺省路径不存在时自动回退包内
+# runtime/contextos-runtime/java-indexer.jar(health 可查生效来源); 仅 jar 与包内
+# runtime 都缺时 contextos init 才给重建指引(vendor/java-indexer/README.md)
 # jar 相对路径挂仓根, Windows 同口径; jar 是字节码, 可直接从 mac/Linux 机拷过来用
+# (clone 路线/自定义场景用)
 indexer_jar = "vendor/java-indexer/target/java-indexer-1.0.0.jar"
 indexer_xmx = "4g"
 watcher_enabled = true

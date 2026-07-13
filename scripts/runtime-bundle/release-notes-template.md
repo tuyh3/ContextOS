@@ -21,7 +21,8 @@
 
 1. **解压**:解出 `contextos-<版本>/` 目录,进入该目录
 2. **装依赖**:执行 `uv sync`(需先安装 [uv](https://docs.astral.sh/uv/),一条命令)
-3. **配置并启动**:拷 `config/profile.example.toml` 为 `config/profile.toml`,
+3. **配置并启动**:拷 `config/profile.example.toml`(Windows 拷
+   `config/profile.example.windows.toml`)为 `config/profile.toml`,
    把 `[[projects]]` 指向你的 Java 项目,然后 `uv run contextos init`。
    Java 运行时**不用配** —— 程序自动使用包内自带的一套(`uv run contextos health`
    可查看当前生效来源)。

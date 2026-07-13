@@ -16,9 +16,9 @@
      datasource_key 从明文 url 末段提。
   5. test_build_datasource_map_skips_masked_url(LOW): 内嵌凭据 url 被整值打码(is_sensitive=1)->
      不从 ****xxxx 提垃圾 dskey, dskey 留空只保 user。
-- 自动脚本测试逻辑: sqlite in-memory; fake_exec 按 SQL 形态分支(ALL_TAB_COMMENTS / SELECT * /
-  GROUP BY)+ fake_search 凑 path C 第三路让 fuse>=high(snapshot 仅 high/confirmed 触发);
-  build_datasource_map 用直接造 config_sources/config_items 行的单元测试(不走全 build)。
+- 自动脚本测试逻辑: sqlite in-memory; 路 B 注释走注入的 comment(D.5); fake_exec 只服务 W7 行
+  快照(SELECT * / GROUP BY)+ fake_search 凑 path C 第三路让 fuse>=high(snapshot 仅
+  high/confirmed 触发); build_datasource_map 用直接造 config_sources/config_items 行的单元测试。
 """
 from sqlalchemy import create_engine, select
 
@@ -33,8 +33,7 @@ def test_db_snapshot_writes_config_items_rows(tmp_path):
     metadata.create_all(eng)
 
     def fake_exec(db, sql, **kw):
-        if "ALL_TAB_COMMENTS" in sql:
-            return [{"OWNER": "UPC", "TABLE_NAME": "SYS_CONFIG", "COMMENTS": "配置表"}]
+        # D.5 后 execute_query 只服务 W7 行快照; 路 B 注释改走注入的 comment(见 oracle_tables)
         if "SYS_CONFIG" in sql and "SELECT *" in sql.upper():  # 小表全量快照
             # HIGH: db 是连接/实例选择器(本函数首参), 绝不进 Oracle 表名; 只 owner.table 两段。
             #       Oracle 三段是 schema.table.column -> 'CTEST.UPC.SYS_CONFIG' 真库非法 SQL。
@@ -53,7 +52,7 @@ def test_db_snapshot_writes_config_items_rows(tmp_path):
         return [_H("配置 说明")] if "business_docs" in subsets else []
 
     oracle_tables = [{"owner": "UPC", "table": "SYS_CONFIG", "columns": [], "row_count": 2,
-                      "pk_cols": ["K"]}]
+                      "pk_cols": ["K"], "comment": "配置表"}]   # 路 B: D.5 store 注释
     build_config_dimension(repo_root=tmp_path, profile=_ProfileStub(), engine=eng,
                            cache_dir=tmp_path, oracle_tables=oracle_tables,
                            execute_query=fake_exec, rag_search=fake_search, db="CTEST")
@@ -70,8 +69,7 @@ def test_db_snapshot_big_table_group_by_wiring(tmp_path):
     metadata.create_all(eng)
 
     def fake_exec(db, sql, **kw):
-        if "ALL_TAB_COMMENTS" in sql:
-            return [{"OWNER": "APP1", "TABLE_NAME": "APP_PARAM", "COMMENTS": "配置表"}]
+        # D.5 后 execute_query 只服务 W7 行快照; 路 B 注释改走注入的 comment
         if "GROUP BY" in sql.upper():
             assert "TESTDB." not in sql and "APP1.APP_PARAM" in sql  # db 不进 Oracle 表名
             return [{"K": "A", "CNT": 30}, {"K": "B", "CNT": 20}]
@@ -86,7 +84,7 @@ def test_db_snapshot_big_table_group_by_wiring(tmp_path):
         return [_H("配置 说明")] if "business_docs" in subsets else []
 
     oracle_tables = [{"owner": "APP1", "table": "APP_PARAM", "columns": [], "row_count": 50001,
-                      "pk_cols": ["K"]}]
+                      "pk_cols": ["K"], "comment": "配置表"}]   # 路 B: D.5 store 注释
     build_config_dimension(repo_root=tmp_path, profile=_ProfileStub(), engine=eng,
                            cache_dir=tmp_path, oracle_tables=oracle_tables,
                            execute_query=fake_exec, rag_search=fake_search, db="TESTDB")

@@ -1,11 +1,12 @@
 """配置表识别(四路融合)+ rule_sets Scope A。
 
 设计契约: 06-配置维度/design.md §5(四路融合识别配置表)+ §3(rule_sets)。
-spec §5.1 path A(0.10/low 表名启发 + 通用中立 seed)/ path B(Oracle DDL COMMENT, 走 05 §8.2 闸门)/
+spec §5.1 path A(0.10/low 表名启发 + 通用中立 seed)/ path B(DDL 表注释, store table_metadata.comment)/
 path C(RAG 业务文档 cheap-first sparse, 无 LLM)/ path D(客户字典)+ §5.5 融合阈值。
 
-注: 取数侧(execute_query / search)由 pipeline 注入, 本模块只做纯逻辑便于单测。
-- path B 的 execute_query 走 05 §8.2 白名单闸门(红线#4), 不直连 oracle。
+注: 取数侧(注释 / search)由 pipeline 注入, 本模块只做纯逻辑便于单测。
+- path B(D.5 去 live SQL 化): 注释来自 store 已刷新的 table_metadata.comment(各方言同一列,
+  天然方言无关), 不再直发 ALL_TAB_COMMENTS, 不再需要 execute_query 通道。
 - path C/D 的 search 走 03b sparse + corpus_scope, cheap-first 无 LLM(LLM 语义判定 09 eval-gated)。
 """
 from __future__ import annotations
@@ -38,45 +39,19 @@ def path_a_score(table_name: str, columns: list[str], name_patterns: list[str],
     return (0.0, ev)
 
 
-# --- path B: Oracle DDL COMMENT(走 05 §8.2 execute_query 闸门, 不直连) ---
+# --- path B: DDL 表注释(去 live SQL 化, spec 附录 D.5) ---
 
-def build_comment_sql(owners: list[str], kw_zh: list[str], kw_en: list[str]) -> tuple[str, dict]:
-    """ALL_TAB_COMMENTS LIKE 配置关键词。**bind params 防注入**(Plan 05 #4 同类: 值绝不拼进 SQL)。
-    返 (sql_with_placeholders, params)。execute_query 再过白名单 + ROWNUM 包装。"""
-    params: dict[str, str] = {}
-    like_parts: list[str] = []
-    for i, k in enumerate(kw_en):
-        params[f"kw{i}"] = f"%{k.lower()}%"
-        like_parts.append(f"LOWER(comments) LIKE :kw{i}")
-    base = len(kw_en)
-    for j, k in enumerate(kw_zh):
-        params[f"kw{base + j}"] = f"%{k}%"
-        like_parts.append(f"comments LIKE :kw{base + j}")
-    owner_ph: list[str] = []
-    for i, o in enumerate(owners):
-        params[f"o{i}"] = o
-        owner_ph.append(f":o{i}")
-    sql = (
-        "SELECT owner, table_name, comments FROM ALL_TAB_COMMENTS "
-        f"WHERE owner IN ({','.join(owner_ph)}) AND comments IS NOT NULL "
-        f"AND ({' OR '.join(like_parts)})"
-    )
-    return sql, params
+def path_b_from_comment(comment: str | None, kw_zh: list[str], kw_en: list[str]) -> dict | None:
+    """DDL 表注释含配置信号词 -> 命中(high)。
 
-
-def path_b_query(execute_query, db: str, owners: list[str],
-                 kw_zh: list[str], kw_en: list[str]) -> dict[str, dict]:
-    """走 05 §8.2 execute_query(白名单 + ROWNUM 包装 + timeout); 不直连 oracle(红线#4)。"""
-    sql, params = build_comment_sql(owners, kw_zh, kw_en)
-    rows = execute_query(db, sql, params=params) or []
-    out: dict[str, dict] = {}
-    for r in rows:
-        owner = (r.get("OWNER") or r.get("owner") or "").strip()
-        table = (r.get("TABLE_NAME") or r.get("table_name") or "").strip()
-        cmt = (r.get("COMMENTS") or r.get("comments") or "").strip()
-        if owner and table:
-            out[f"{owner}.{table}"] = {"confidence": "high", "excerpt": cmt[:200], "path": "B"}
-    return out
+    D.5(冷评审 M1): 注释来自 store 已刷新的 `table_metadata.comment`(MetadataProvider 各方言
+    都填同一列), **不再**直发 `ALL_TAB_COMMENTS`(Oracle 字典视图), 因此天然方言无关, 也不再
+    需要 execute_query 通道 —— 随 live SQL 一并消除了注入面。识别逻辑与旧路 B 一致(注释 LIKE
+    配置关键词), 复用 has_config_signal 信号词判定(与 path C/D 同一 predicate)。"""
+    cmt = (comment or "").strip()
+    if cmt and has_config_signal(cmt, kw_zh, kw_en):
+        return {"confidence": "high", "excerpt": cmt[:200], "path": "B"}
+    return None
 
 
 # --- path C: RAG 业务文档(cheap-first sparse + 关键词信号, 无 LLM) ---

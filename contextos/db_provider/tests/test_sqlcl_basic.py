@@ -175,6 +175,6 @@ def test_oracle_config_connect_timeout_defaults_to_5(monkeypatch):
     monkeypatch.setenv("ORACLE_TEST_INST1_USER", "u")
     monkeypatch.setenv("ORACLE_TEST_INST1_PASSWORD", "p")
     prof = _minimal_profile(allowed=["TEST_INST1"])
-    assert prof.oracle.connect_timeout_seconds == 5
+    assert prof.database.oracle.connect_timeout_seconds == 5
     client = m.connect_from_profile(prof)
     assert client._connect_timeout == 5

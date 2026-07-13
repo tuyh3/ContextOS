@@ -124,10 +124,13 @@ def search_sql(engine: Engine, *, pattern: str, limit: int = 20) -> list[dict[st
     if not store.existing_tables(engine, tpl.name):
         return []  # fresh 环境表未建: 视同无模板, 不裸抛
 
+    # 大小写不敏感包含(spec 附录 G): MySQL 场景表名在 SQL 文本里大小写混用
+    # (小写 DDL vs 大写 Java 引用), icontains 让任一大小写 pattern 都能命中。
+    # 对既有 Oracle 只增匹配不减(向后兼容); SQLite LIKE 本就不敏感, PG/信创 PG 靠 ilike。
     stmt = (
         select(tpl.c.template_id, tpl.c.source_file, tpl.c.container,
                tpl.c.sql_text, tpl.c.recovery_mode, tpl.c.confidence)
-        .where(tpl.c.sql_text.contains(pattern))
+        .where(tpl.c.sql_text.icontains(pattern))
         .limit(cap)
     )
     out: list[dict[str, Any]] = []
@@ -163,16 +166,20 @@ def lookup_table(engine: Engine, *, table: str, owner: str = "",
     if owner:
         _validate_ident(owner, field="owner")
 
+    # 表身份大小写不敏感(spec 附录 G): edges 内部恒为大写(NameResolver 两侧 upper 折叠),
+    # 故边匹配用 upper 后的 table_key。对 Oracle(入参已大写)是 no-op; MySQL 小写入参补匹配。
+    # 返回的 table 字段与 live Oracle 查询仍用原始入参(不改显示/Oracle live 路径)。
+    table_key = (table or "").upper()
     edges = store.lineage_edges
     lineage_built = bool(store.existing_tables(engine, edges.name))
     edges_in = edges_out = 0
     if lineage_built:
         with engine.connect() as conn:
             edges_out = len(conn.execute(
-                select(edges.c.edge_id).where(edges.c.src_table == table)
+                select(edges.c.edge_id).where(edges.c.src_table == table_key)
             ).all())
             edges_in = len(conn.execute(
-                select(edges.c.edge_id).where(edges.c.dst_table == table)
+                select(edges.c.edge_id).where(edges.c.dst_table == table_key)
             ).all())
 
     # eff_owner: caller 给的优先; 没给则从 routing 解析(同一个 owner 既定路由也填 SQL bind)。
@@ -243,6 +250,8 @@ def lookup_lineage(engine: Engine, *, table: str, direction: str = "both",
     多库: 对每个 querier 累加(schema 不重叠, 同表名不在多库, 去重 seen_* 处理)。
     """
     _validate_ident(table, field="table")
+    # 表身份大小写不敏感(spec 附录 G): edges 恒大写, 边匹配用 upper key(同 lookup_table)。
+    table_key = (table or "").upper()
     want_up = direction in ("up", "both")
     want_down = direction in ("down", "both")
 
@@ -258,7 +267,7 @@ def lookup_lineage(engine: Engine, *, table: str, direction: str = "both",
             if want_down:
                 for r in conn.execute(
                     select(edges.c.dst_table, edges.c.relation_type)
-                    .where(edges.c.src_table == table)
+                    .where(edges.c.src_table == table_key)
                 ):
                     tbl = r._mapping["dst_table"]
                     if tbl and tbl not in seen_down:
@@ -269,7 +278,7 @@ def lookup_lineage(engine: Engine, *, table: str, direction: str = "both",
             if want_up:
                 for r in conn.execute(
                     select(edges.c.src_table, edges.c.relation_type)
-                    .where(edges.c.dst_table == table)
+                    .where(edges.c.dst_table == table_key)
                 ):
                     tbl = r._mapping["src_table"]
                     if tbl and tbl not in seen_up:

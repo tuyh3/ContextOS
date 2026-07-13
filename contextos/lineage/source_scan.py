@@ -10,6 +10,16 @@ from pathlib import Path
 
 from contextos.lineage.models import SourceFile
 from contextos.profile.schema import CodeConfig, DaoSqlPattern
+from contextos.util.mybatis_sniff import sniff_mybatis_mapper_text
+
+# MyBatis 多方言项目分目录约定: {dialect}Mapper/(pak-bomc 实测 mysqlMapper/ 与
+# oracleMapper/ 兄弟并存)。E.5: 以目标 db_type 驱动, 排非目标方言的 mapper 树。
+_DIALECT_MAPPER_TOKENS = {
+    "oracle": "oraclemapper",
+    "mysql": "mysqlmapper",
+    "postgres": "postgresmapper",
+    "opengauss": "opengaussmapper",
+}
 
 
 def scan_sources(repo_root: Path, code: CodeConfig) -> list[SourceFile]:
@@ -45,6 +55,49 @@ def scan_sources(repo_root: Path, code: CodeConfig) -> list[SourceFile]:
                 continue
             results.append(SourceFile(path=rel_path, language=language,
                                       module=module, category=category, content=content))
+    return results
+
+
+def scan_mapper_files(repo_root: Path, code: CodeConfig, *, db_type: str) -> list[str]:
+    """扫描 MyBatis mapper XML(spec E.4/E.5), 返回相对 repo_root 的 posix 路径列表。
+
+    E.4: 按**文件内容** sniff(mybatis DTD / <mapper> 根标签, 共用 util.mybatis_sniff),
+    不按目录约定; 排 exclude_dirs(target/build/...) + `-bak` 备份树。
+    E.5: db_type 驱动方言侧选择 —— 排非目标方言的 {dialect}Mapper/ 树(漂移死代码),
+    收本方言目录 + 非方言目录(plain sqlmap/ / 裸 mapper/ 照收)。
+    """
+    repo_root = Path(repo_root)
+    roots = [repo_root / r for r in code.source_roots] if code.source_roots else [repo_root]
+    foreign = {tok for dt, tok in _DIALECT_MAPPER_TOKENS.items() if dt != db_type}
+    results: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for fpath in sorted(root.rglob("*.xml")):
+            if not fpath.is_file():
+                continue
+            try:
+                rel_path = fpath.relative_to(repo_root).as_posix()
+            except ValueError:
+                rel_path = fpath.as_posix()
+            if rel_path in seen:
+                continue
+            if _is_excluded(rel_path, code.exclude_dirs):
+                continue
+            segs = [s.lower() for s in rel_path.split("/")]
+            if any(s.endswith("-bak") for s in segs):        # 备份树(E.4)
+                continue
+            if any(s in foreign for s in segs):               # 非目标方言 mapper 树(E.5)
+                continue
+            try:
+                text = fpath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if not sniff_mybatis_mapper_text(text):           # 内容识别(E.4)
+                continue
+            seen.add(rel_path)
+            results.append(rel_path)
     return results
 
 

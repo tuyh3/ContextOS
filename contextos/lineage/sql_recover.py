@@ -17,19 +17,20 @@ _NOISE_RE = re.compile(
 )
 
 
-def recover_from_sql_file(source: SourceFile) -> list[RecoveredSqlCandidate]:
+def recover_from_sql_file(source: SourceFile, *, dialect: str = "oracle",
+                          ) -> list[RecoveredSqlCandidate]:
     content = source.content.strip()
     if not content:
         return []
     confidence = "medium" if source.category == "dao_sql" else "low"
-    # 主路径: sqlglot 整体 parse
+    # 主路径: sqlglot 整体 parse(dialect 单一取值点, spec 4.5; 默认 oracle 向后兼容)
     try:
-        statements = sqlglot.parse(content, dialect="oracle")
+        statements = sqlglot.parse(content, dialect=dialect)
         results, line_offset, got_any = [], 1, False
         for stmt in statements:
             if stmt is None:
                 continue
-            sql_text = stmt.sql(dialect="oracle")
+            sql_text = stmt.sql(dialect=dialect)
             if sql_text.strip():
                 got_any = True
                 results.append(RecoveredSqlCandidate(

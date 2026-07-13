@@ -61,6 +61,7 @@ def health_check_impl(app_ctx: Any) -> dict[str, Any]:
     return {
         "jdt_ls": _probe_jdt_ls(app_ctx),
         "oracle": _probe_oracle(app_ctx),
+        "mysql": _probe_mysql(app_ctx),
         "models": _probe_models(app_ctx),
         "engine": _probe_engine(app_ctx),
         "code_projection": _probe_code_projection(app_ctx),
@@ -216,15 +217,39 @@ def _probe_models(app_ctx: Any) -> str:
 
 def _probe_oracle(app_ctx: Any) -> str:
     """oracle_router().fan_out() 有非空结果 -> 'connected', 否则 'offline'。异常 -> 'offline'(降级)。
+    非 oracle 目标库(spec A.4 并列键)-> 'not_applicable', 不误报 offline。
 
     Block 1b: 使用 DbRouter.fan_out() 探活(多库支持);router 内部降级不崩(nil-safe)。
     """
+    try:
+        if getattr(app_ctx.profile.database, "type", None) != "oracle":
+            return "not_applicable"
+    except Exception:
+        pass
     try:
         router = app_ctx.oracle_router()
         connected = bool(router and router.fan_out())
         return "connected" if connected else "offline"
     except Exception:
         # router 本应自降级;任何异常一律视作离线, 不把 health_check 拖崩。
+        return "offline"
+
+
+def _probe_mysql(app_ctx: Any) -> str:
+    """mysql profile -> 急连探活 connected/offline; 非 mysql 类型 -> not_applicable(spec A.4)。
+
+    连接经 connect_mysql_from_profile(白名单闸 + 凭据 env), __enter__ 急连探活;
+    任何异常(缺凭据/库不通/闸拒)一律 offline, 不把 health 拖崩。"""
+    try:
+        if getattr(app_ctx.profile.database, "type", None) != "mysql":
+            return "not_applicable"
+    except Exception:
+        return "not_applicable"
+    try:
+        from contextos.db_provider.mysql_client import connect_mysql_from_profile
+        with connect_mysql_from_profile(app_ctx.profile):
+            return "connected"
+    except Exception:
         return "offline"
 
 
@@ -307,6 +332,7 @@ def profile_info_impl(app_ctx: Any) -> dict[str, Any]:
         "repo_root": _repo_root(profile),
         "source_roots": _source_roots(profile),
         "oracle_instances": _oracle_instances(profile),
+        "mysql_instances": _mysql_instances(profile),
         "rag_corpora": _rag_corpora(profile),
         "missing_required": _missing_required(profile),
         "dispatch_patterns": _dispatch_patterns(profile),
@@ -348,7 +374,16 @@ def _source_roots(profile: Any) -> list[str]:
 def _oracle_instances(profile: Any) -> list[str]:
     """白名单 TNS 实例**名**(非凭据;凭据走 env ORACLE_<TNS>_USER/_PASSWORD, 不在 profile)。"""
     try:
-        return list(profile.oracle.allowed_instances)
+        # 统一取值点 profile.database; 非 oracle 类型(database.oracle=None)走 except 返空
+        return list(profile.database.oracle.allowed_instances)
+    except Exception:
+        return []
+
+
+def _mysql_instances(profile: Any) -> list[str]:
+    """白名单 MySQL 实例别名(非凭据;凭据走 env MYSQL_<ALIAS>_USER/_PASSWORD, 不在 profile)。"""
+    try:
+        return [i.alias for i in profile.database.mysql.instances]
     except Exception:
         return []
 

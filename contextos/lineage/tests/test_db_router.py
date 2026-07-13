@@ -15,12 +15,15 @@
 6. connect 失败 -> None 不崩,fan_out 返回空列表
 """
 from contextos.lineage import store, db_router
+from contextos.profile.schema import DatabaseConfig, OracleConfig
 from contextos.storage.db import make_engine
 
 
 class _FakeProfile:
-    class oracle:
-        allowed_instances = ["TEST_DB1", "TEST_DB3"]
+    # 真 pydantic 类型构造(feedback_test_fixtures_match_real_contract):
+    # 统一取值点 = profile.database(spec 2026-07-10 附录 A.3), 裸 stub 会漂离真实契约
+    database = DatabaseConfig(type="oracle", oracle=OracleConfig(
+        tns_admin="/tns", allowed_instances=["TEST_DB1", "TEST_DB3"]))
 
 
 def _engine_with_routing():

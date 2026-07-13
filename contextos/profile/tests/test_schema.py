@@ -41,7 +41,7 @@ def test_profile_accepts_minimal_valid_config() -> None:
     assert p.storage.data_dir.endswith("contextos-data")
     assert p.ingestion.min_chunk_chars == 30
     assert p.jdtls_runtime.java_home.endswith("jre21")
-    assert p.oracle.dblink_map == {}
+    assert p.database.oracle.dblink_map == {}
     assert p.projects[0].language == "java"
 
 

@@ -59,6 +59,18 @@ app = typer.Typer(
     help="ContextOS 需求影响定位器 —— MCP server / 一次性查询 / 评测 入口。",
 )
 
+
+@app.callback()
+def _load_env() -> None:
+    """所有子命令前置: 加载仓根 .env(DB 凭据 MYSQL_<ALIAS>_USER/_PASSWORD / API key 等)。
+
+    mysql_client 等按"凭据由上游 CLI 已加载"设计(不自己 load_dotenv, 避免每次连接重读文件);
+    此前只有 llm.factory / sqlcl_mcp 各自 load_dotenv, `init --only database`(不走 LLM)时
+    MySQL 凭据无人加载 -> DbSafetyError(实验实测)。在 app 级统一加载, 兜住全命令。
+    load_dotenv 不覆盖已 export 的同名变量(export 优先)。"""
+    from dotenv import load_dotenv
+    load_dotenv()
+
 _ProfileOpt = Annotated[
     str | None,
     typer.Option(

@@ -131,6 +131,92 @@ class OracleConfig(_StrictBase):
     dblink_map: dict[str, str] = Field(default_factory=dict)
 
 
+# ---- 多方言 [database] 统一段(spec 2026-07-10 附录 A) ----
+
+_ENV_SAFE_ALIAS = r"[A-Za-z_][A-Za-z0-9_]*"
+
+
+class MysqlInstanceConfig(_StrictBase):
+    """一个 MySQL 实例: alias 承担凭据键(MYSQL_<ALIAS>_USER/_PASSWORD)+ 白名单键
+    两个角色(MySQL 无 TNS 亦不造等价物, host/port 直连)。旋钮语义沿 Oracle。"""
+    alias: str
+    host: str
+    port: Annotated[int, Field(gt=0, le=65535)] = 3306
+    databases: list[str] = Field(..., min_length=1)
+    max_rows_hard_limit: Annotated[int, Field(gt=0)] = 1000
+    query_timeout_seconds: Annotated[int, Field(gt=0)] = 30
+    connect_timeout_seconds: Annotated[int, Field(gt=0)] = 5
+    metadata_cache_ttl_hours: Annotated[int, Field(ge=0)] = 24
+
+    @field_validator("alias")
+    @classmethod
+    def _alias_env_safe(cls, v: str) -> str:
+        # A.5: alias 要拼进环境变量名 MYSQL_<ALIAS>_USER, 必须是合法标识符
+        import re
+        if not re.fullmatch(_ENV_SAFE_ALIAS, v):
+            raise ValueError(
+                f"mysql instance alias {v!r} must match {_ENV_SAFE_ALIAS} "
+                "(用于拼环境变量名 MYSQL_<ALIAS>_USER/_PASSWORD)"
+            )
+        return v
+
+
+class MysqlConfig(_StrictBase):
+    instances: list[MysqlInstanceConfig] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _aliases_unique(self) -> "MysqlConfig":
+        # 冷验证 M1(2026-07-10): alias 是凭据键(MYSQL_<ALIAS>_USER/_PASSWORD),
+        # 重复=凭据静默碰撞; env 变量名 upper 拼接, 按 case-insensitive 查重
+        seen: dict[str, str] = {}
+        for inst in self.instances:
+            key = inst.alias.upper()
+            if key in seen:
+                raise ValueError(
+                    f"duplicate mysql instance alias {inst.alias!r} "
+                    f"(与 {seen[key]!r} 大小写不敏感冲突; alias 是凭据键必须唯一)"
+                )
+            seen[key] = inst.alias
+        return self
+
+
+class OpenGaussConfig(_StrictBase):
+    """预留形状(本轮不实装, 仅 schema 占位; DatabaseConfig 拒载 type=opengauss)。
+    compat_mode 是库级属性, 决定 sqlglot 方言映射(dialects.get_traits)。"""
+    compat_mode: Literal["A", "B", "PG"] = "A"
+
+
+class DatabaseConfig(_StrictBase):
+    """目标业务库统一段: type 判别式 + type 专属子段一一对应(附录 A.1)。
+    一个项目只对应一种数据库(2026-07-07 用户裁决), 不做多库列表。"""
+    type: Literal["oracle", "mysql", "postgres", "opengauss"]
+    oracle: OracleConfig | None = None
+    mysql: MysqlConfig | None = None
+    opengauss: OpenGaussConfig | None = None
+
+    @model_validator(mode="after")
+    def _type_matches_subsection(self) -> "DatabaseConfig":
+        if self.type in ("postgres", "opengauss"):
+            # 预留未实装: 显式拒载不静默降级(A.1); traits 行与设计依据见
+            # db_provider/dialects.py + spec 附录 B/I。
+            raise ValueError(
+                f"database.type={self.type!r} is reserved for future dialects "
+                "and not implemented yet (预留未实装)"
+            )
+        present = {n for n in ("oracle", "mysql", "opengauss")
+                   if getattr(self, n) is not None}
+        if self.type not in present:
+            raise ValueError(
+                f"database.type={self.type!r} requires [database.{self.type}] subsection"
+            )
+        extra = sorted(present - {self.type})
+        if extra:
+            raise ValueError(
+                f"subsection(s) {extra!r} does not match database.type={self.type!r}"
+            )
+        return self
+
+
 class CodeIndexConfig(_StrictBase):
     """04b code_* 投影(spec D1-D9)。全部有默认值: 老 profile 不写 [code_index] 也能 load。"""
 
@@ -345,5 +431,31 @@ class Profile(_StrictBase):
     llm_rerank: LlmRerankConfig = Field(default_factory=LlmRerankConfig)  # Plan 07 旋钮接 profile (2026-06-09)
     code_index: CodeIndexConfig = Field(default_factory=CodeIndexConfig)  # Plan 04b 新增
     jdtls_runtime: JdtlsRuntimeConfig
-    oracle: OracleConfig
+    # [oracle] 旧段(兼容垫片输入): 单独出现时归一进 database 并清为 None(A.2/A.3)。
+    # 生产码禁止直接引用 profile.oracle —— 统一取值点是 profile.database。
+    oracle: OracleConfig | None = None
+    database: DatabaseConfig | None = None
     projects: list[ProjectConfig] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def _normalize_database(self) -> "Profile":
+        """兼容垫片(附录 A.2): [oracle] -> [database] type=oracle 等价映射。
+
+        归一后顶层 oracle 清 None——机械强制 A.3 的引用清零: 任何残留
+        profile.oracle.* 引用在真跑时立刻 AttributeError, 不靠 convention。
+        两段并存 = 配置错误硬拒; 都缺 = 无目标库配置硬拒。
+        """
+        if self.oracle is not None and self.database is not None:
+            raise ValueError(
+                "both [oracle] and [database] sections present; "
+                "use [database] only ([oracle] 是旧式写法, 单独出现时自动归一)"
+            )
+        if self.oracle is not None:
+            self.database = DatabaseConfig(type="oracle", oracle=self.oracle)
+            self.oracle = None
+        if self.database is None:
+            raise ValueError(
+                "missing [database] section (或旧式 [oracle] 段); "
+                "目标业务库配置是必填项"
+            )
+        return self

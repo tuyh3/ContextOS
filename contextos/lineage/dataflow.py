@@ -32,6 +32,12 @@ def trace_method_dataflow(engine: Engine, *, source_path: str) -> list[dict[str,
     """
     seen: set[str] = set()
     hits: list[dict[str, Any]] = []
+    # 查询期方言读回单一取值点(spec 4.5): build 期存的 sql_dialect, 缺失默认 oracle。
+    # fresh 库(只跑过 init --only code)metadata_meta 表未建 -> 守卫后默认 oracle,
+    # 不裸抛 OperationalError(fresh-env 家族纪律, 同下方各路径的 existing_tables 守卫)。
+    dialect = "oracle"
+    if store.existing_tables(engine, "metadata_meta"):
+        dialect = store.get_meta(engine, "sql_dialect") or "oracle"
 
     # fresh 环境(血缘表族未建, 如只跑过 init --only code): 缺哪张表就跳过对应路径,
     # 视同空血缘返回, 不裸抛 OperationalError(同 lineage/tools.py 各 lookup)。
@@ -77,13 +83,13 @@ def trace_method_dataflow(engine: Engine, *, source_path: str) -> list[dict[str,
         template_id = tr._mapping["template_id"]
         # 用 parse_sql 拿到带 relation_type 的关系(join/where/subquery/write);
         # 但单表只读 SELECT 不产 relation -> 再用 sqlglot 直接抽表兜底(裁决: §7 路径 C 抽表)。
-        relations, _seq, err = parse_sql(sql_text)
+        relations, _seq, err = parse_sql(sql_text, dialect=dialect)
         rel_type_by_table: dict[str, str] = {}
         for rel in relations:
             for tbl in (rel.src_table, rel.dst_table):
                 if tbl:
                     rel_type_by_table.setdefault(tbl, rel.relation_type)
-        for tbl in _tables_in_sql(sql_text):
+        for tbl in _tables_in_sql(sql_text, dialect=dialect):
             if tbl and tbl not in seen:
                 seen.add(tbl)
                 hits.append(dict(table=tbl, relation_type=rel_type_by_table.get(tbl, "SELECT"),
@@ -92,10 +98,10 @@ def trace_method_dataflow(engine: Engine, *, source_path: str) -> list[dict[str,
     return hits
 
 
-def _tables_in_sql(sql_text: str) -> list[str]:
+def _tables_in_sql(sql_text: str, *, dialect: str = "oracle") -> list[str]:
     """直接从 sqlglot AST 抽所有真实表名(单表只读 SELECT 也覆盖)。解析失败 -> 空。"""
     try:
-        tree = sqlglot.parse_one(preprocess_sql(sql_text), dialect="oracle")
+        tree = sqlglot.parse_one(preprocess_sql(sql_text), dialect=dialect)
     except Exception:
         return []
     if tree is None:

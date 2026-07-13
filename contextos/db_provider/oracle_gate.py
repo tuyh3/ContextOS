@@ -18,7 +18,16 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-PRODUCTION_KEYWORDS = ("PROD", "PRD", "LIVE", "MASTER", "RELEASE")
+# 单一 SSOT 上提至 gate_common(spec 2026-07-10 附录 F.3); 此处 re-export 保持
+# 存量 import(profile/validator 等)不变。
+from contextos.db_provider.gate_common import PRODUCTION_KEYWORDS, DbSafetyError
+
+__all__ = [
+    "PRODUCTION_KEYWORDS",
+    "OracleSafetyError",
+    "assert_tns_is_test_only",
+    "assert_query_is_readonly",
+]
 
 _COMMENT_BLOCK = re.compile(r"/\*.*?\*/", re.DOTALL)
 _COMMENT_LINE = re.compile(r"--[^\n]*")
@@ -33,8 +42,12 @@ _FORBIDDEN_KEYWORDS = re.compile(
 )
 
 
-class OracleSafetyError(Exception):
-    """Raised when a TNS / SQL violates POC test-instance safety rails."""
+class OracleSafetyError(DbSafetyError):
+    """Raised when a TNS / SQL violates POC test-instance safety rails.
+
+    子类化 DbSafetyError(gate_common): 上游可按方言中立基类统一 except,
+    存量 `except OracleSafetyError` 行为不变。
+    """
 
 
 def assert_tns_is_test_only(tns: str, allowed: Iterable[str]) -> None:

@@ -10,7 +10,7 @@
 ![uv](https://img.shields.io/badge/包管理-uv-DE5FE9)
 ![MCP](https://img.shields.io/badge/接入-MCP%20原生-000000)
 ![平台](https://img.shields.io/badge/平台-Linux%20·%20macOS%20·%20Windows-informational)
-![状态](https://img.shields.io/badge/状态-v1%20实现完成·评测中-2EA043)
+![状态](https://img.shields.io/badge/状态-v1%20实现完成·人工走查中-2EA043)
 
 </div>
 
@@ -127,7 +127,8 @@ uv sync
 cp config/profile.example.toml config/profile.toml            # Windows 用 profile.example.windows.toml
 #   然后编辑 config/profile.toml,把路径填成你自己的项目
 #   [jdtls_runtime] 保持范本原样即可 —— 完整包路线会自动用包内运行时;
-#   clone 路线自动探测不到时,再照"JDT LS 运行时从哪来"一节手填
+#   clone 路线不带包内运行时:要么按"路线三"把完整包的 runtime/ 搬进来(同样零配置),
+#   要么照"JDT LS 运行时从哪来"一节手填(health 探到 VSCode 扩展会给现成路径,照抄即可)
 
 # 3. 配凭据 .env:LLM API key(+ 连 DB 才要的 Oracle 账号)
 cp .env.example .env
@@ -166,7 +167,7 @@ uv run contextos health
 
 - **`[[projects]]`** — `path` 指向你的 Java 项目根;`java = { gradle_home, gradle_java_home, ... }` 填**编译该项目**用的 Gradle 和 JDK(老项目常是 JDK 8——跟下面跑 JDT LS 的 `java_home` 不是一回事,别填混)。
 - **`[llm]`** — `provider` / `model` / `base_url` 填你的 LLM 网关;`api_key_env` 填**环境变量名**(如 `ANTHROPIC_API_KEY`),真正的 key 放 `.env` 或环境里、**不写进 toml**(见 `.env.example`)。只想先跑通不接真 LLM,留空即走内置 FakeLLM。
-- **`[jdtls_runtime]`** — JDT LS / lombok / JRE 三路径(见下一小节,`contextos health` 会自动探测)。
+- **`[jdtls_runtime]`** — JDT LS / lombok / JRE 三路径(完整包路线不用动,自动用包内运行时;clone 路线见下一小节,`contextos health` 会自动探测)。
 - **`[oracle]`** — `tns_admin` 指向 tnsnames 目录,`allowed_instances` 列白名单测试库;**没有数据库就跳过**,用 `contextos init --skip-oracle` 不碰这段(含 `PROD`/`LIVE` 等关键字的连接一律运行时硬拒)。
 - **`[[corpus.sources]]`**(可选)— 指向业务文档目录/仓给 RAG 用;不配则语料为空。
 
@@ -194,9 +195,12 @@ java_home   = "..."   # 跑 JDT LS 的 JRE/JDK 根目录(21+)
 自动探测并使用包内这一套。跑 `uv run contextos health` 能看到 `jdtls_runtime.source` 是
 `"runtime-bundle (fallback)"`,说明当前就在用包内运行时,一切正常。
 
-只有你想**钉死路径**(比如不想依赖自动探测、或要跨包复用同一份运行时)才需要手填,
-往下看「路线一/二」,把 `health` 给出的 `suggestion` 照抄进 profile 即可。开发者走
-`git clone` 路线(不含运行时)时,同样先跑一遍 `health` 看自动探测能不能兜住。
+只有你想**钉死路径**(比如不想依赖自动探测、或要跨包复用同一份运行时)才需要手填。
+完整包用户不用看「路线一/二」:`health` 的 `suggestion` 会直接给出包内运行时的四行现成
+路径,前三行照抄进 `[jdtls_runtime]`,第四行 `indexer_jar` 填进 `[code_index].indexer_jar`
+(注意别塞进 `[jdtls_runtime]`——那段是严格 schema,多出的键会报错)。开发者走
+`git clone` 路线(不含运行时)时,先跑一遍 `health` 看自动探测能不能兜住,不行再往下看
+「路线一/二」。
 
 **路线一:复用 VSCode 的 Java 扩展。** 如果装过 VSCode 并且装了
 [Extension Pack for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-pack)
@@ -208,12 +212,13 @@ uv run contextos health
 ```
 
 `health` 输出是一大坨 JSON(各子系统体检表),你要的路径在 `health.jdtls_runtime.suggestion`
-这一段。当 profile 里的三条路径还没填 / 填错时,这段长这样:
+这一段。当 profile 里的三条路径还没填 / 填错、且没有包内运行时兜底(clone 路线)时,
+这段长这样(有包内运行时时是 ok + fallback,不会出现 missing):
 
 ```json
 "jdtls_runtime": {
   "status": "missing",
-  "missing": ["jdtls_path", "lombok_path", "java_home"],
+  "missing": ["jdtls_path 不是目录", "lombok_path 不存在", "java_home 不存在"],
   "suggestion": {
     "jdtls_path":  "/Users/you/.vscode/extensions/redhat.java-1.54.0-darwin-arm64/server",
     "lombok_path": "/Users/you/.vscode/extensions/redhat.java-1.54.0-darwin-arm64/lombok/lombok-1.18.39.jar",

@@ -43,7 +43,11 @@ def _print_summary(report: InitReport) -> None:
 def init(
     profile: Annotated[str | None, typer.Option("--profile", help="profile.toml 路径")] = None,
     only: Annotated[str | None, typer.Option("--only", help="只 build 单维度: code|database|config|corpus")] = None,
-    skip_oracle: Annotated[bool, typer.Option("--skip-oracle", help="不连 Oracle, 只静态血缘")] = False,
+    # L1c(spec 附录 A.4): 旗标中性化 --skip-oracle -> --skip-db。两个 param_decls 指向同一
+    # bool 开关: 传其一即生效, 同传不冲突(幂等置 True); --skip-oracle 过渡期后随别名一起移除。
+    skip_db: Annotated[bool, typer.Option(
+        "--skip-db", "--skip-oracle",
+        help="不连目标库, 只静态血缘(--skip-oracle 已废弃, 为兼容别名, 效果相同)")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="DEBUG 日志")] = False,
 ) -> None:
     """初始化客户: build 四个证据维度, 跑完直接可查。"""
@@ -57,7 +61,7 @@ def init(
         print("\n=== contextos init 中止 ===")
         print(f"profile 加载失败: {type(exc).__name__}: {exc}")
         raise typer.Exit(_EXIT["aborted"]) from None
-    report = run_init(prof, now=datetime.now().isoformat(), only=only, skip_oracle=skip_oracle)
+    report = run_init(prof, now=datetime.now().isoformat(), only=only, skip_db=skip_db)
     _print_summary(report)
     raise typer.Exit(_EXIT[report.verdict])
 

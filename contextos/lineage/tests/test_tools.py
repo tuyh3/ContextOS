@@ -66,7 +66,7 @@ def _seed(engine) -> None:
              "recovery_mode": "sql_file", "confidence": "high"},
             {"template_id": "t2", "source_file": "Y.java", "container": "YSvc.run",
              "sql_text": "INSERT INTO ORDER_ITEMS (ID) VALUES (?)",
-             "recovery_mode": "mybatis", "confidence": "medium"},
+             "recovery_mode": "mybatis_mapper", "confidence": "medium"},
         ])
 
 
@@ -381,9 +381,12 @@ def test_lineage_tools_fresh_db_with_real_router_not_crash():
     评分标准: 真 DbRouter(连接桩恒抛=全离线)扫全族, 任何 OperationalError 冒泡即红。"""
     from contextos.lineage.db_router import DbRouter
 
+    from contextos.profile.schema import DatabaseConfig, OracleConfig
+
     class _P:
-        class oracle:
-            allowed_instances = ["TEST_DB1"]
+        # 真 pydantic 类型(统一取值点 profile.database, spec 附录 A.3)
+        database = DatabaseConfig(type="oracle", oracle=OracleConfig(
+            tns_admin="/tns", allowed_instances=["TEST_DB1"]))
 
     def _offline(tns):
         raise OSError("offline")

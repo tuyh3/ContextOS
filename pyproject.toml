@@ -30,6 +30,7 @@ dependencies = [
     "sentence-transformers>=3.0",
     # DB
     "oracledb>=2.5",
+    "pymysql>=1.1",   # MySQL 目标库驱动(MIT, 纯 Python; spec 2026-07-10 附录 C.4)
     "python-dotenv>=1.0",
     # 存储抽象
     "sqlalchemy>=2.0,<3.0",
@@ -38,6 +39,8 @@ dependencies = [
     "tree-sitter>=0.23,<0.26",
     "tree-sitter-java>=0.23.5",
     "sqlglot>=25.0",
+    "sqlparse>=0.5",  # vendored mybatis_mapper2sql(lineage/_vendor)排版美化依赖; >=0.5 有 1 万 token 上限, 补丁 1 容错之
+
     # 文档解析 (POC-T1)
     "openpyxl>=3.1",
     "python-docx>=1.1",
@@ -76,6 +79,7 @@ asyncio_mode = "auto"
 markers = [
     "integration: marks tests as integration tests (require a real Java project + JDT LS, slow)",
     "cmd_boundary: cross-platform subprocess 命令边界测试(本地 -m cmd_boundary 选此跨平台子集; Windows CI 阶段2 起跑全量 not-integration, 不再靠此 marker 选子集)",
+    "mysql_integration: 需本地 MySQL 测试库(127.0.0.1:3306, pak-bomc 表结构); 连不上自动 skip(spec L2/L5 真库轨)",
 ]
 
 # Pyright config lives in ./pyrightconfig.json — some LSP integrations only read

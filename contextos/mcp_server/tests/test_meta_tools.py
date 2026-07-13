@@ -166,6 +166,42 @@ def test_health_check_offline_does_not_crash(meta_app_ctx) -> None:
     assert h["engine"] == "ok"                 # 内存 SQLite SELECT 1 探活过
 
 
+def _mysql_profile(make_profile):
+    """把 make_profile(oracle 型)改成 mysql 型: 换掉 database 段。
+    实例 alias=health_test -> 凭据 env MYSQL_HEALTH_TEST_* 必未设 -> 探活确定 offline。"""
+    from contextos.profile.schema import (DatabaseConfig, MysqlConfig,
+                                          MysqlInstanceConfig)
+    p = make_profile()
+    p.database = DatabaseConfig(type="mysql", mysql=MysqlConfig(instances=[
+        MysqlInstanceConfig(alias="health_test", host="127.0.0.1", port=3306,
+                            databases=["appdb"])]))
+    return p
+
+
+def test_health_mysql_key_offline_when_no_creds(make_profile) -> None:
+    """mysql profile: oracle 键 not_applicable(并列键不误报), mysql 键 offline(缺凭据)。"""
+    ctx = _MetaAppCtx(_mysql_profile(make_profile))
+    h = health_check_impl(ctx)
+    assert h["oracle"] == "not_applicable"   # spec A.4: 非 oracle 目标不误报 offline
+    assert h["mysql"] == "offline"           # 缺 MYSQL_HEALTH_TEST_* 凭据 -> 闸/连接失败降级
+
+
+def test_health_oracle_profile_mysql_key_not_applicable(meta_app_ctx) -> None:
+    """oracle profile: oracle 键 offline(router=None), mysql 键 not_applicable。"""
+    h = health_check_impl(meta_app_ctx)
+    assert h["oracle"] == "offline"
+    assert h["mysql"] == "not_applicable"
+
+
+def test_profile_info_mysql_instances(make_profile) -> None:
+    """mysql profile: profile_info 并列 mysql_instances(只列别名不列凭据)。"""
+    from contextos.mcp_server.tools.meta import profile_info_impl
+    ctx = _MetaAppCtx(_mysql_profile(make_profile))
+    info = profile_info_impl(ctx)
+    assert info["mysql_instances"] == ["health_test"]
+    assert info["oracle_instances"] == []
+
+
 def test_health_check_ready_when_resources_materialized(meta_profile) -> None:
     """searcher/llm 已 materialized(被用过)-> jdt_ls:'ready' / models:'ready'。"""
     ctx = _MetaAppCtx(meta_profile, materialized=True)

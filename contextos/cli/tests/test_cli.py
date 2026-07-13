@@ -318,3 +318,16 @@ def test_cli_query_unknown_adapter_kind_errors_cleanly(monkeypatch):
     res = CliRunner().invoke(cli_main.app, ["query", "x.txt", "--adapter-kind", "bogus"])
     assert res.exit_code != 0
     assert "bogus" in res.output or "unsupported" in res.output or "Error" in res.output
+
+
+def test_app_callback_loads_dotenv(monkeypatch):
+    """修复实证(L5 pak-bomc 实验实测): app 级 callback 前置 load_dotenv, 让 .env 里的
+    DB 凭据(MYSQL_<ALIAS>_USER/_PASSWORD)对所有子命令可用。此前只有 llm.factory/sqlcl_mcp
+    各自 load_dotenv, `init --only database`(不走 LLM)时 MySQL 凭据无人加载 -> DbSafetyError。
+    评分: 调 callback 必触发 load_dotenv 一次。"""
+    import dotenv
+    calls = {"n": 0}
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+    from contextos.cli.main import _load_env
+    _load_env()
+    assert calls["n"] == 1

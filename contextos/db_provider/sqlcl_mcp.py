@@ -177,11 +177,19 @@ def connect_from_profile(profile: object, tns: str | None = None) -> OracleClien
 
     if not isinstance(profile, Profile):
         raise TypeError(f"expected Profile, got {type(profile).__name__}")
-    selected = tns or profile.oracle.allowed_instances[0]
-    assert_tns_is_test_only(selected, allowed=profile.oracle.allowed_instances)
+    # 统一取值点 = profile.database(spec 附录 A.3); 非 oracle 类型此通道不可用
+    ora = profile.database.oracle if profile.database is not None else None
+    if ora is None:
+        db_type = getattr(profile.database, "type", None)
+        raise OracleSafetyError(
+            f"profile database.type={db_type!r} is not 'oracle'; "
+            "Oracle client channel unavailable"
+        )
+    selected = tns or ora.allowed_instances[0]
+    assert_tns_is_test_only(selected, allowed=ora.allowed_instances)
     cfg = OracleConfig(
-        tns_admin=profile.oracle.tns_admin,
-        allowed_instances=list(profile.oracle.allowed_instances),
-        connect_timeout_seconds=profile.oracle.connect_timeout_seconds,
+        tns_admin=ora.tns_admin,
+        allowed_instances=list(ora.allowed_instances),
+        connect_timeout_seconds=ora.connect_timeout_seconds,
     )
     return OracleClient.from_config(tns_name=selected, config=cfg)

@@ -84,6 +84,12 @@ def test_evidence_source_provenance_derived():
         hit_workers=["db_lineage_bridge"],
         signals_by_worker={"db_lineage_bridge": {"recovery_mode": "string_builder"}}, rag_score=0.0)
     assert _evidence_source("db_lineage_bridge", sb) == "lp-java-extract-builder"
+    # 多方言 spec E.6: mapper 摄入边 provenance = lp-mybatis-mapper2sql(非默认 lp-sqlglot-parse)
+    mb = CorroboratedCandidate(target="UPC.T", kind="SQL_TABLE", score_overall=0.5,
+        confidence_tier="MEDIUM", bridge_scores={}, consensus_count=1,
+        hit_workers=["db_lineage_bridge"],
+        signals_by_worker={"db_lineage_bridge": {"recovery_mode": "mybatis_mapper"}}, rag_score=0.0)
+    assert _evidence_source("db_lineage_bridge", mb) == "lp-mybatis-mapper2sql"
     rg = CorroboratedCandidate(target="k", kind="CONFIG_KEY", score_overall=0.3,
         confidence_tier="MEDIUM", bridge_scores={}, consensus_count=0,
         hit_workers=["config_dimension_bridge"],

@@ -74,9 +74,9 @@ def test_oracle_config_query_limits_defaults():
     from contextos.profile.schema import Profile
     p = Profile(**_min_profile_kwargs())
     # 既有三字段不变 + 新增查询限制带默认(向后兼容)
-    assert p.oracle.allowed_instances == ["TEST_DB3"]
-    assert p.oracle.max_rows_hard_limit == 1000
-    assert p.oracle.query_timeout_seconds == 30
-    assert p.oracle.reconnect_on_idle is True
-    assert p.oracle.metadata_cache_ttl_hours == 24
-    assert p.oracle.instance_alias == {}      # 默认空(裁决 5: 本地表 db 段留空)
+    assert p.database.oracle.allowed_instances == ["TEST_DB3"]
+    assert p.database.oracle.max_rows_hard_limit == 1000
+    assert p.database.oracle.query_timeout_seconds == 30
+    assert p.database.oracle.reconnect_on_idle is True
+    assert p.database.oracle.metadata_cache_ttl_hours == 24
+    assert p.database.oracle.instance_alias == {}      # 默认空(裁决 5: 本地表 db 段留空)

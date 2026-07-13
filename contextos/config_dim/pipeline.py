@@ -50,6 +50,19 @@ from contextos.config_dim.parsers import json_parser as _json_parser  # noqa: F4
 from contextos.config_dim.parsers import xml_mybatis_parser as _xml_parser  # noqa: F401
 
 
+def _in_include_paths(rel: str, include_paths: list[str]) -> bool:
+    """include_paths 非空则圈定扫描范围(空=全仓)。每项当目录前缀(pak-ccp -> pak-ccp/**)
+    或 fnmatch glob 处理, 与 source_roots 语义一致。此前该字段声明了却无人消费(死字段),
+    大仓 config 扫描无法圈定 -> 吃 bomc-pak/toptea-web 巨型 geojson 等噪音(pak-bomc 实测)。"""
+    if not include_paths:
+        return True
+    for pat in include_paths:
+        pfx = pat.rstrip("/")
+        if rel == pfx or rel.startswith(pfx + "/") or fnmatch.fnmatch(rel, pat):
+            return True
+    return False
+
+
 def _iter_config_files(repo: Path, fcfg) -> list[Path]:
     out: list[Path] = []
     for p in repo.rglob("*"):
@@ -58,6 +71,8 @@ def _iter_config_files(repo: Path, fcfg) -> list[Path]:
         if p.suffix.lower() not in fcfg.include_extensions:
             continue
         rel = p.relative_to(repo).as_posix()
+        if not _in_include_paths(rel, fcfg.include_paths):
+            continue
         if any(fnmatch.fnmatch(rel, pat) for pat in fcfg.exclude_paths):
             continue
         if p.suffix.lower() == ".json" and is_blacklisted(rel, fcfg.json_blacklist):
@@ -252,16 +267,17 @@ def build_config_dimension(repo_root, profile, engine: Engine, cache_dir, *,
 
     Phase A: build_file_config 扫配置文件 -> config_sources(source_type='file')/snapshots/
       entities/items/bindings(CI-clean, 不碰 Oracle/RAG)。
-    Phase B: 对注入的 oracle_tables 清单跑四路识别(path A 表名启发 / path B Oracle DDL COMMENT
-      走 05 §8.2 execute_query 闸门 / path C RAG 业务文档 + path D 客户字典走 03b sparse
-      rag_search)-> fuse_config_table 融合 -> 候选(design §5.5)。
+    Phase B: 对注入的 oracle_tables 清单跑四路识别(path A 表名启发 / path B DDL 表注释, 读
+      随表清单注入的 t["comment"](源自 store table_metadata.comment, 方言无关, D.5) /
+      path C RAG 业务文档 + path D 客户字典走 03b sparse rag_search)-> fuse 融合 -> 候选(§5.5)。
     Phase C: apply_confirmations 权威覆盖(human_confirmed > 自动 > 启发); high/confirmed 写
       config_sources(source_type='db_table'), needs_review 写但标记(design §5.5), skip 不写。
     Trip 2: engine_05 给且有识别出的 config_table -> writeback_config_tables 回填 05
       lineage_edges.dst_dataset_type(非阻塞, 见 design §2 盲区2 + 构建契约 §3)。
 
-    Oracle/RAG search 全注入(execute_query/rag_search): 离线 fake 测主链; 真跑 wire 05 §8.2
-      execute_query + corpus_scope.scoped_hits(红线#4/#2)。oracle_tables 来自 05 表清单。
+    execute_query(D.5 后**仅** W7 行快照用, Oracle-only 休眠)/ rag_search 注入: 离线 fake 测主链;
+      真跑 wire 05 §8.2 白名单闸门 + corpus_scope.scoped_hits(红线#4/#2)。oracle_tables(含
+      owner/table/columns/comment)来自 _oracle_tables_from_store 从 05 store 派生。
     known-limitation(review LOW): apply_confirmations 只覆盖本次 oracle_tables 产出的候选; 人工
       confirm 过但本次不在 oracle_tables 的离线配置表不会被重新 surface(确认仍持久, 下次该表进
       oracle_tables 时生效)。完整 "confirmed 表无条件 surface" 留后续。
@@ -276,22 +292,16 @@ def build_config_dimension(repo_root, profile, engine: Engine, cache_dir, *,
     spats = profile.config.sensitive_key_patterns  # W5: evidence excerpt redact(敏感值脱敏)
     salt = SENS.load_or_create_salt(Path(cache_dir))  # W7: snapshot 敏感行 HMAC fingerprint
 
-    # W2: path B 按 owner 预算一次(O(owners) 非 O(tables))。ALL_TAB_COMMENTS WHERE owner IN
-    # (..) 单查覆盖该 owner 全表; 同 owner N 张表只查 1 次(实库省 N-1 次 round-trip)。
-    pathb_by_owner: dict[str, dict] = {}
-    if execute_query:
-        owners = sorted({t["owner"] for t in (oracle_tables or [])})
-        for ow in owners:
-            pathb_by_owner[ow] = ID.path_b_query(
-                execute_query, db, [ow], det.comment_keywords_zh, det.comment_keywords_en)
-
     # Phase B: 对 oracle 表清单跑四路 -> 融合
     candidates: list[dict] = []
     for t in (oracle_tables or []):
         owner, table = t["owner"], t["table"]
         a, _ = ID.path_a_score(table, t.get("columns", []), name_pats, rule_cols)
         # W5: 留住命中 dict(供 config_evidence 落库, excerpt 过 sanitize_text)。
-        b_hit = pathb_by_owner.get(owner, {}).get(f"{owner}.{table}")
+        # path B(D.5 去 live SQL 化): 表注释来自 store table_metadata.comment(由
+        # _oracle_tables_from_store 随表清单注入 t["comment"], 方言无关), 不再 execute_query。
+        b_hit = ID.path_b_from_comment(t.get("comment", ""),
+                                       det.comment_keywords_zh, det.comment_keywords_en)
         c_hit = ID.path_c_query(
             table, rag_search, det.comment_keywords_zh, det.comment_keywords_en) if rag_search else None
         d_hit = ID.path_d_query(

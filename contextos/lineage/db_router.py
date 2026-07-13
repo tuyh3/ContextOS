@@ -110,7 +110,12 @@ class DbRouter:
 
     def fan_out(self) -> list[Any]:
         """连所有 allowed_instances, 过滤掉连失败的 None。"""
-        out = [self._connect_cached(t) for t in self._profile.oracle.allowed_instances]
+        # 统一取值点 profile.database; 非 oracle 类型返空(=offline 语义, L2 分派 MySQL)
+        ora = (self._profile.database.oracle
+               if self._profile.database is not None else None)
+        if ora is None:
+            return []
+        out = [self._connect_cached(t) for t in ora.allowed_instances]
         return [c for c in out if c is not None]
 
     def close(self) -> None:

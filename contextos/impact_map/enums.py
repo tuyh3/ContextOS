@@ -62,12 +62,13 @@ RelationType = Literal[
 
 LineageType = Literal["DIRECT", "INDIRECT"]
 
-# §3.0.1 + 05 §3-§5 recovery_mode 7 取值 SSOT
-# (LP java_extract.py 5 + sql_recover.py 2)
+# §3.0.1 + 05 §3-§5 recovery_mode 8 取值 SSOT
+# (LP java_extract.py 5 + sql_recover.py 2 + 多方言 spec E.6 mapper 摄入 1)
 RecoveryMode = Literal[
     "literal", "concat", "string_builder",
     "local_var", "static_const",
     "sql_file", "semicolon_split",
+    "mybatis_mapper",   # spec 2026-07-10 附录 E.6: MyBatis mapper 展开; confidence=medium
 ]
 
 # §3.0.2 配置维 entity_type 3 取值(LP Phase 3 config_entities)

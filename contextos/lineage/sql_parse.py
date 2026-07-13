@@ -25,13 +25,17 @@ def preprocess_sql(sql: str) -> str:
     return sql.strip()
 
 
-def parse_sql(sql_text: str) -> tuple[list[ParsedRelation], list[SequenceRef], str | None]:
-    """返回 (relations, seq_refs, error)。error=None 表示成功。"""
+def parse_sql(sql_text: str, *, dialect: str = "oracle",
+              ) -> tuple[list[ParsedRelation], list[SequenceRef], str | None]:
+    """返回 (relations, seq_refs, error)。error=None 表示成功。
+
+    dialect: sqlglot 方言(spec 2026-07-10 4.5, 单一取值点)。默认 "oracle" 保持
+    CMPAK 行为不变; MySQL 目标由 build/query 层从 profile 解析并传入(mysql)。"""
     sql = preprocess_sql(sql_text)
     if not sql:
         return [], [], "empty SQL"
     try:
-        tree = sqlglot.parse_one(sql, dialect="oracle")
+        tree = sqlglot.parse_one(sql, dialect=dialect)
     except Exception:
         relations = _regex_fallback(sql)
         seq_refs = _regex_sequence_refs(sql)

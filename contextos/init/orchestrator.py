@@ -157,13 +157,14 @@ def _augment_code_with_stopwords_draft(step: StepResult, profile: Any) -> StepRe
 
 
 def _step_database(profile: Any, engine: Any, now: str, repo_root: Path,
-                   skip_oracle: bool) -> StepResult:
+                   skip_db: bool) -> StepResult:
     from contextos.lineage.build_database import build_database_dimension
     log.info("=== 2/4 数据库维度 ===")
     out = build_database_dimension(profile, engine, now=now, repo_root=repo_root,
-                                   skip_oracle=skip_oracle)
+                                   skip_db=skip_db)
+    # L1c(spec 附录 A.4): 消费端一律读中性键 db_status(oracle_status 只是过渡期别名)
     status: Literal["ok", "degraded"] = (
-        "ok" if out["oracle_status"] == "connected" else "degraded")
+        "ok" if out["db_status"] == "connected" else "degraded")
     counts = {"edges": int(out.get("lineage", {}).get("edges", 0)),
               "object_edges": int(out.get("object_lineage", {}).get("edges", 0)),
               "tables": int(out.get("metadata", {}).get("tables", 0))}
@@ -173,11 +174,26 @@ def _step_database(profile: Any, engine: Any, now: str, repo_root: Path,
 
 def _oracle_tables_from_store(engine: Any) -> list[dict[str, Any]]:
     """从 05 store 已装的列元数据(维度 2 build 的)聚合 oracle_tables 表清单, 供 config 维
-    Phase B path A(表名 / 规则列启发)识别 DB 配置表 —— 零额外 Oracle 连接(spec §5.1
-    '配置依赖维度 2 的 Oracle 表清单')。execute_query(path B DDL COMMENT)/ rag_search
-    (path C/D)+ 基数信号(NUM_ROWS)留 Plan 06 后续, 见 spec §5.1 deferred 注。"""
+    Phase B path A(表名 / 规则列启发)+ path B(表注释)识别 DB 配置表 —— 零额外 DB 连接
+    (spec §5.1 '配置依赖维度 2 的表清单')。
+
+    D.5(去 live SQL 化): 每张表的 `comment` 从 store `table_metadata.comment` join 进来
+    (MetadataProvider 各方言都填同一列, 天然方言无关), path B 直接读它, 不再直发
+    ALL_TAB_COMMENTS。join 键 = (owner, template_name), 两表写入时都是 TABLE_NAME.upper()
+    (oracle_metadata) —— 大小写归一防御性 upper 兜底跨方言。rag_search(path C/D)+ 基数信号
+    (NUM_ROWS)留 Plan 06 后续, 见 spec §5.1 deferred 注。
+
+    边界(spec §8): 表清单来自 `columns`, 故 Phase B 仍依赖维度 2 抓过列
+    (fetch_full_object_metadata); MySQL 当前不抓列 -> 清单空 -> Phase B 休眠。改从
+    table_metadata 直接枚举表(让 MySQL Phase B 生效)是 L5 实验期按真实数据验证的独立改动。"""
     from contextos.lineage import store
     store.create_all(engine)          # idempotent: --only config(维度 2 未跑)时保 columns 表存在, 不崩
+    comment_by_key: dict[tuple[str, str], str] = {}
+    for r in store.all_table_metadata(engine):
+        owner = (r.get("owner") or "").strip().upper()
+        tpl = (r.get("template_name") or "").strip().upper()
+        if owner and tpl:
+            comment_by_key[(owner, tpl)] = r.get("comment") or ""
     by_table: dict[tuple[str, str], list[str]] = {}
     for r in store.all_columns(engine):
         owner = (r.get("owner") or "").strip()
@@ -188,14 +204,16 @@ def _oracle_tables_from_store(engine: Any) -> list[dict[str, Any]]:
         col = (r.get("column_name") or "").strip()
         if col:
             cols.append(col)
-    return [{"owner": o, "table": t, "columns": cols} for (o, t), cols in by_table.items()]
+    return [{"owner": o, "table": t, "columns": cols,
+             "comment": comment_by_key.get((o.upper(), t.upper()), "")}
+            for (o, t), cols in by_table.items()]
 
 
 def _step_config(profile: Any, engine: Any, repo_root: Path, *,
                  db_refreshed: bool | None = None) -> StepResult:
     """维度 config。db_refreshed = 本次 database 维是否刷新成功(MED-1 状态诚实):
       True  -> 本次刚刷新, oracle_tables 新鲜 -> ok
-      False -> 本次跑了 database 但没刷新(skip_oracle/降级), oracle_tables 是旧快照 -> degraded
+      False -> 本次跑了 database 但没刷新(skip_db/降级), oracle_tables 是旧快照 -> degraded
       None  -> 本次没跑 database 维(--only config), 读持久快照(按 --only 设计)-> ok 但 detail 注明
     """
     from contextos.config_dim import schema as cfg_schema
@@ -226,9 +244,9 @@ def _step_config(profile: Any, engine: Any, repo_root: Path, *,
             status, detail = "ok", (
                 "未跑数据库维度且无持久列快照(lineage scope 默认不抓列); 文件配置(Phase A)已建")
         else:
-            # db_refreshed is False: 本次跑了数据库维但 skip_oracle / 离线 / 刷新失败 -> 诚实 degraded
+            # db_refreshed is False: 本次跑了数据库维但 skip_db / 离线 / 刷新失败 -> 诚实 degraded
             status, detail = "degraded", (
-                "无 Oracle 表元数据(skip_oracle / 离线 / 刷新失败)-> DB 配置表识别(Phase B)跳过; "
+                "无 Oracle 表元数据(skip_db / 离线 / 刷新失败)-> DB 配置表识别(Phase B)跳过; "
                 "文件配置(Phase A)已建")
     elif db_refreshed is False:
         # 本次 database 维跑了但没刷新成功 -> oracle_tables 是旧快照, 不谎报 ok
@@ -290,7 +308,7 @@ def _step_corpus(profile: Any, engine: Any) -> StepResult:
 
 
 def run_init(profile: Any, *, now: str, repo_root: Any = None,
-             only: str | None = None, skip_oracle: bool = False) -> InitReport:
+             only: str | None = None, skip_db: bool = False) -> InitReport:
     if only is not None and only not in _DIMS:
         # 未知 --only 维度名: 不静默 no-op(否则 verdict 假性 ready), 直接 abort
         reason = f"unknown dimension: {only} (expected one of {', '.join(_DIMS)})"
@@ -317,9 +335,9 @@ def run_init(profile: Any, *, now: str, repo_root: Any = None,
                 _cs = _augment_code_with_stopwords_draft(_cs, profile)
                 steps.append(_cs)
             elif dim == "database":
-                db_step = _step_database(profile, engine, now, repo, skip_oracle)
+                db_step = _step_database(profile, engine, now, repo, skip_db)
                 steps.append(db_step)
-                db_refreshed = db_step.status == "ok"   # ok <=> oracle_status==connected <=> 本次刷新成功
+                db_refreshed = db_step.status == "ok"   # ok <=> db_status==connected <=> 本次刷新成功
             elif dim == "config":
                 steps.append(_step_config(profile, engine, repo, db_refreshed=db_refreshed))
             elif dim == "corpus":

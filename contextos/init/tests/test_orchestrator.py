@@ -47,7 +47,7 @@ def test_run_init_runs_four_dims_in_order(monkeypatch):
     calls = []
     monkeypatch.setattr(orchestrator, "_step_code", lambda p, e: calls.append("code") or _ok("code"))
     monkeypatch.setattr(orchestrator, "_step_database",
-                        lambda p, e, now, repo_root, skip_oracle: calls.append("database") or _ok("database"))
+                        lambda p, e, now, repo_root, skip_db: calls.append("database") or _ok("database"))
     monkeypatch.setattr(orchestrator, "_step_config",
                         lambda p, e, repo_root, db_refreshed=None: calls.append("config") or _ok("config"))
     monkeypatch.setattr(orchestrator, "_step_corpus",
@@ -64,7 +64,7 @@ def test_run_init_dimension_failure_degrades_not_aborts(monkeypatch):
     monkeypatch.setattr(orchestrator, "_step_code",
                         lambda p, e: (_ for _ in ()).throw(RuntimeError("JDT boom")))
     monkeypatch.setattr(orchestrator, "_step_database",
-                        lambda p, e, now, repo_root, skip_oracle: _ok("database"))
+                        lambda p, e, now, repo_root, skip_db: _ok("database"))
     monkeypatch.setattr(orchestrator, "_step_config", lambda p, e, repo_root, db_refreshed=None: _ok("config"))
     monkeypatch.setattr(orchestrator, "_step_corpus", lambda p, e: _ok("corpus"))
 
@@ -91,7 +91,7 @@ def test_run_init_only_runs_single_dim(monkeypatch):
     monkeypatch.setattr(orchestrator, "_make_engine_and_validate", lambda p: object())
     monkeypatch.setattr(orchestrator, "_step_code", lambda p, e: calls.append("code") or _ok("code"))
     monkeypatch.setattr(orchestrator, "_step_database",
-                        lambda p, e, now, repo_root, skip_oracle: calls.append("database") or _ok("database"))
+                        lambda p, e, now, repo_root, skip_db: calls.append("database") or _ok("database"))
     monkeypatch.setattr(orchestrator, "_step_config", lambda p, e, repo_root: calls.append("config") or _ok("config"))
     monkeypatch.setattr(orchestrator, "_step_corpus", lambda p, e: calls.append("corpus") or _ok("corpus"))
     orchestrator.run_init(_FakeProfile(), now="2026-06-07T00:00:00", only="database")
@@ -108,12 +108,12 @@ def test_run_init_unknown_only_aborts(monkeypatch):
 
 def test_run_init_threads_db_refreshed_false_when_database_degraded(monkeypatch):
     """MED-1: run_init 把'本次 database 维是否刷新成功'传给 _step_config。database degraded
-    (skip_oracle / 连库降级)-> config 拿到 db_refreshed=False, 据此不靠旧快照谎报 ok。"""
+    (skip_db / 连库降级)-> config 拿到 db_refreshed=False, 据此不靠旧快照谎报 ok。"""
     seen = {}
     monkeypatch.setattr(orchestrator, "_make_engine_and_validate", lambda p: object())
     monkeypatch.setattr(orchestrator, "_step_code", lambda p, e: _ok("code"))
     monkeypatch.setattr(orchestrator, "_step_database",
-                        lambda p, e, now, repo_root, skip_oracle:
+                        lambda p, e, now, repo_root, skip_db:
                         StepResult(dimension="database", status="degraded", counts={}))
 
     def _cfg(p, e, repo_root, db_refreshed=None):
@@ -132,7 +132,7 @@ def test_run_init_threads_db_refreshed_true_when_database_ok(monkeypatch):
     monkeypatch.setattr(orchestrator, "_make_engine_and_validate", lambda p: object())
     monkeypatch.setattr(orchestrator, "_step_code", lambda p, e: _ok("code"))
     monkeypatch.setattr(orchestrator, "_step_database",
-                        lambda p, e, now, repo_root, skip_oracle: _ok("database"))
+                        lambda p, e, now, repo_root, skip_db: _ok("database"))
 
     def _cfg(p, e, repo_root, db_refreshed=None):
         seen["db_refreshed"] = db_refreshed
@@ -176,6 +176,39 @@ def test_oracle_tables_from_store_groups_by_owner_table():
     by_key = {(t["owner"], t["table"]): set(t["columns"]) for t in out}
     assert by_key[("UPC", "T_CFG")] == {"ID", "VAL"}
     assert by_key[("SEC", "T_OTHER")] == {"C"}
+    # D.5: 每张表带 comment 键(无 table_metadata 时默认空串, 契约稳定)
+    assert all("comment" in t for t in out)
+    assert {t["comment"] for t in out} == {""}
+
+
+def test_oracle_tables_from_store_joins_comment_from_table_metadata():
+    """D.5(去 live SQL 化): 表的 comment 从 store table_metadata.comment join 进来, 供路 B
+    读取(方言无关)。join 键 = (owner, template_name); 折叠防御性 upper 兜底跨方言大小写。
+
+    大小写不敏感 join 是真契约(非无害多余): mysql_metadata 写 template_name **不 upper**
+    (原文 name), 若 join 不 upper 兜底, 大写 columns 侧就对不上小写 table_metadata 侧。故这里
+    故意让 table_metadata.template_name 用小写 'sys_config' 而 columns 用大写 'SYS_CONFIG',
+    验证防御性 .upper() 真在兜底(否则命中数为 0)。"""
+    from contextos.lineage import store
+    from contextos.storage.db import make_engine
+    e = make_engine("sqlite://")
+    store.create_all(e)
+    store.write_columns(e, [
+        dict(owner="UPC", table_name="SYS_CONFIG", column_name="ID",
+             data_type="X", nullable="N", comment="", column_id=1, db_name="A"),
+        dict(owner="UPC", table_name="T_PLAIN", column_name="C",
+             data_type="X", nullable="Y", comment="", column_id=1, db_name="A"),
+    ])
+    store.write_table_metadata(e, [
+        # 大小写故意错位: template_name 小写(MySQL 风格) vs columns 大写 -> 靠 .upper() 兜底才命中
+        dict(owner="UPC", template_name="sys_config", db_name="A",
+             comment="系统配置表", dataset_type="TABLE"),
+        # T_PLAIN 无注释行 -> comment 默认空; SYS_CONFIG 注释被大小写不敏感 join 上
+    ])
+    out = orchestrator._oracle_tables_from_store(e)
+    cmt = {t["table"]: t["comment"] for t in out}
+    assert cmt["SYS_CONFIG"] == "系统配置表"   # 小写 template_name 也 join 上 = 防御性 upper 生效
+    assert cmt["T_PLAIN"] == ""
 
 
 def test_oracle_tables_from_store_empty_when_no_metadata():

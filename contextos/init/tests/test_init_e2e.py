@@ -5,13 +5,13 @@ Design intent:
     完成顺序编排,且降级时不崩溃(graceful degrade)。
   - code 维度 stub:避免真 JDT ~110s 进程;
     config/corpus 维度 stub:避免真仓库扫描 + materialize;
-    database 维度真实运行(skip_oracle=True):仅建静态血缘,不连 Oracle。
+    database 维度真实运行(skip_db=True):仅建静态血缘,不连目标库。
   - 这是 Block 2 最终 e2e 回归:证明 Tasks 4-7 的 orchestrator/build_database/
     report/cli 全链路已接通。
 
 Scoring / pass criteria:
   1. run_init 返回 InitReport,steps 包含全四维度。
-  2. database 维度状态 = degraded(skip_oracle -> oracle_status=offline)。
+  2. database 维度状态 = degraded(skip_db -> db_status=offline)。
   3. verdict = degraded(code stub 返回 degraded,至少一维不 ok)。
   4. 无异常抛出(fail-safe 守护有效)。
 
@@ -20,7 +20,7 @@ Test logic (automated):
   - Profile 用命名对象构造(与 test_build_database.py._profile 模式完全一致),
     避免 dict literal 导致 pyright reportArgumentType 错误。
   - 通过 monkeypatch 替换 _step_code/_step_config/_step_corpus;
-    _step_database 不替换,让真实 build_database_dimension(skip_oracle=True) 跑。
+    _step_database 不替换,让真实 build_database_dimension(skip_db=True) 跑。
   - storage.data_dir 设为 tmp_path/"data",确保 engine_from_profile 可创建工作目录。
 """
 from __future__ import annotations
@@ -77,7 +77,7 @@ def _profile(tmp_path: Path) -> Profile:
 
 
 def test_init_e2e_offline_degrades_gracefully(monkeypatch, tmp_path):
-    """端到端: skip_oracle + code 维 stub(不起真 JDT)-> 跑完四维度, verdict degraded 不崩。"""
+    """端到端: skip_db + code 维 stub(不起真 JDT)-> 跑完四维度, verdict degraded 不崩。"""
     _build_repo(tmp_path)
     prof = _profile(tmp_path)
 
@@ -103,22 +103,22 @@ def test_init_e2e_offline_degrades_gracefully(monkeypatch, tmp_path):
             dimension="corpus", status="ok", counts={"materialized": 0}
         ),
     )
-    # _step_database 不 stub: 真实运行 build_database_dimension(skip_oracle=True)
+    # _step_database 不 stub: 真实运行 build_database_dimension(skip_db=True)
 
     report = orchestrator.run_init(
         prof,
         now="2026-06-07T00:00:00",
         repo_root=tmp_path,
-        skip_oracle=True,
+        skip_db=True,
     )
 
     # 四维度全部执行(顺序编排不 short-circuit)
     assert {s.dimension for s in report.steps} == {"code", "database", "config", "corpus"}
 
-    # database 维: skip_oracle -> oracle_status=offline -> status=degraded
+    # database 维: skip_db -> db_status=offline -> status=degraded
     db_step = next(s for s in report.steps if s.dimension == "database")
     assert db_step.status == "degraded", (
-        f"expected database.status=degraded (skip_oracle), got {db_step.status!r}: {db_step.detail}"
+        f"expected database.status=degraded (skip_db), got {db_step.status!r}: {db_step.detail}"
     )
 
     # code 维: stub 返回 degraded -> 聚合 verdict=degraded
@@ -132,18 +132,18 @@ def test_init_e2e_offline_degrades_gracefully(monkeypatch, tmp_path):
     assert any(r.startswith("database:") for r in report.reasons), f"database 不在 reasons: {report.reasons}"
 
 
-def test_step_config_degraded_when_skip_oracle_no_metadata(tmp_path):
-    """I1: skip_oracle/离线(db_refreshed=False)且无列元数据 -> config Phase B 无表清单空转,
+def test_step_config_degraded_when_skip_db_no_metadata(tmp_path):
+    """I1: skip_db/离线(db_refreshed=False)且无列元数据 -> config Phase B 无表清单空转,
     诚实标 degraded, oracle_tables=0(不再谎报 ok)。
 
-    注意(option A): db_refreshed=False 才代表 skip_oracle/离线/刷新失败; db_refreshed=True 但
+    注意(option A): db_refreshed=False 才代表 skip_db/离线/刷新失败; db_refreshed=True 但
     columns 空 = lineage scope 设计内(连上了没抓列), 那是 ok 不是 degraded(见下个测试)。"""
     from contextos.lineage import store
     from contextos.storage.db import engine_from_profile
     _build_repo(tmp_path)
     prof = _profile(tmp_path)
     engine = engine_from_profile(prof)
-    store.create_all(engine)                      # 模拟维度 2 已建表但未装列元数据(skip_oracle)
+    store.create_all(engine)                      # 模拟维度 2 已建表但未装列元数据(skip_db)
     result = orchestrator._step_config(prof, engine, tmp_path, db_refreshed=False)
     assert result.status == "degraded"
     assert result.counts["oracle_tables"] == 0
@@ -152,7 +152,7 @@ def test_step_config_degraded_when_skip_oracle_no_metadata(tmp_path):
 def test_step_config_ok_when_lineage_scope_no_columns(tmp_path):
     """option A: Oracle 连上且刷新成功(db_refreshed=True)但 columns 空(lineage scope 默认不抓列)
     -> config 诚实标 ok(完成了本 scope 该做的: Phase A 文件配置; Phase B 列识别按设计跳过),
-    detail 说明是 lineage scope 跳过, 不能误报'离线/skip_oracle'(否则完美 init 永远 verdict≠ready)。"""
+    detail 说明是 lineage scope 跳过, 不能误报'离线/skip_db'(否则完美 init 永远 verdict≠ready)。"""
     from contextos.lineage import store
     from contextos.storage.db import engine_from_profile
     _build_repo(tmp_path)
@@ -163,7 +163,7 @@ def test_step_config_ok_when_lineage_scope_no_columns(tmp_path):
     assert result.status == "ok"                  # 不是 degraded
     assert result.counts["oracle_tables"] == 0
     assert "lineage scope" in result.detail        # 诚实说明是 scope 跳过
-    assert "离线" not in result.detail and "skip_oracle" not in result.detail   # 不误报离线
+    assert "离线" not in result.detail and "skip_db" not in result.detail   # 不误报离线
 
 
 def test_step_config_ok_when_oracle_metadata_present(tmp_path):
@@ -187,13 +187,13 @@ def test_step_config_ok_when_oracle_metadata_present(tmp_path):
 
 
 def test_step_config_degraded_when_db_not_refreshed_this_run(tmp_path):
-    """MED-1: 本次未刷新 Oracle 元数据(skip_oracle / database 维 degraded)时, 即便 store 里
+    """MED-1: 本次未刷新 Oracle 元数据(skip_db / database 维 degraded)时, 即便 store 里
     有上次的旧列, config 不能凭旧快照谎报 ok -> 必须 degraded 且 detail 注明基于旧快照。
 
     设计思路(memory feedback_contextos_test_documentation):
     - 复现 MED-1: _step_config 原 status 仅看 store 是否有列(持久快照), 与本次是否连/刷新
-      Oracle 无关; skip_oracle 重跑会基于陈旧列谎报 ok。
-    - db_refreshed=False 表示本次 database 维跑了但没刷新成功(skip_oracle/降级)。
+      Oracle 无关; skip_db 重跑会基于陈旧列谎报 ok。
+    - db_refreshed=False 表示本次 database 维跑了但没刷新成功(skip_db/降级)。
     - 评分: status==degraded 且 detail 含'旧快照'或'未刷新'; oracle_tables 计数仍如实给出。
     """
     from contextos.lineage import store

@@ -50,6 +50,7 @@ _DB_SOURCE_BY_RECOVERY = {
     "sql_file": "lp-sql-recover-literal",
     "concat": "lp-java-extract-concat",
     "string_builder": "lp-java-extract-builder",
+    "mybatis_mapper": "lp-mybatis-mapper2sql",   # 多方言 spec E.6: mapper 摄入边真实 provenance
 }
 _CONFIG_SOURCE_BY_STRATEGY = {
     "exact_match": "lp-bind-resolver-exact",

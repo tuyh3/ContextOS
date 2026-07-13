@@ -32,8 +32,8 @@ def test_example_profile_validates_cross_namespace_rules() -> None:
     profile = load_profile(EXAMPLE)
     validate_profile(profile, check_paths=False)
     # 验证所有 allowed_instances 均通过安全门(多库无主库, 按 owner 自动路由)
-    for tns in profile.oracle.allowed_instances:
-        assert_tns_is_test_only(tns, allowed=profile.oracle.allowed_instances)
+    for tns in profile.database.oracle.allowed_instances:
+        assert_tns_is_test_only(tns, allowed=profile.database.oracle.allowed_instances)
 
 
 def test_example_profile_drives_engine_and_backend(
@@ -54,7 +54,7 @@ def test_example_profile_drives_engine_and_backend(
 
 def test_validator_catches_prod_keyword_via_loaded_profile() -> None:
     profile = load_profile(EXAMPLE)
-    profile.oracle.allowed_instances.append("MY_PROD_DB")
+    profile.database.oracle.allowed_instances.append("MY_PROD_DB")
     with pytest.raises(ProfileValidationError, match="production keyword"):
         validate_profile(profile, check_paths=False)
 

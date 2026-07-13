@@ -60,6 +60,8 @@ contextos-test-data/
 
 # 用户真实 profile.toml(含绝对路径 + TNS,不入 git;config/profile.example.toml 是范本)
 config/profile.toml
+# 实验 profile(含绝对机器路径 + 客户仓引用, 不入公开快照; L5 pak-bomc 实验本地用)
+config/profile.bomc.toml
 # data/profile.toml 已由上面 data/ 兜底,无需重复
 
 # Vendored OSS clones（v0.2 时拉过 Understand-Anything 作为 POC 对照工具,

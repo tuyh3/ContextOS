@@ -272,6 +272,10 @@
         "LOG_ID"
       ]
     },
+    "mysql_types_and_builtins": {
+      "reason": "MySQL DDL 列类型/引擎/字符集与内置函数, 在每个 MySQL 项目的建表块与 SQL 里遍地出现, 无特征定位信号(与 Oracle 口味 sql_types_and_builtins 平行; spec 2026-07-10 4.5 L3)。新开一类别不动既有数组, 对 CMPAK Oracle 停用行为零影响。",
+      "keywords": ["TINYINT", "SMALLINT", "MEDIUMINT", "DATETIME", "YEAR", "TINYTEXT", "MEDIUMTEXT", "LONGTEXT", "TINYBLOB", "MEDIUMBLOB", "LONGBLOB", "ENUM", "UNSIGNED", "ZEROFILL", "AUTO_INCREMENT", "BIT", "ENGINE", "INNODB", "MYISAM", "CHARSET", "COLLATE", "UTF8", "UTF8MB4", "COMMENT", "IFNULL", "ISNULL", "NOW", "CURDATE", "CURTIME", "DATE_FORMAT", "STR_TO_DATE", "CONCAT_WS", "GROUP_CONCAT", "FIND_IN_SET", "DATEDIFF", "TIMESTAMPDIFF", "UNIX_TIMESTAMP", "FROM_UNIXTIME", "LAST_INSERT_ID", "LOCATE", "INSTR", "LPAD", "RPAD", "LEAST", "GREATEST", "DATE_ADD", "DATE_SUB", "MONTH", "CURRENT_TIMESTAMP", "ON_UPDATE"]
+    },
     "camelcase_generics": {
       "reason": "PascalCase phrases that read as boilerplate ('Customer Information', 'Bulk Operation') in requirement docx but match too broadly when glued into Java identifier prefixes. Sourced from observed over-predict on real customer samples.",
       "keywords": [
